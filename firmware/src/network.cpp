@@ -171,6 +171,27 @@ bool connectWiFi() {
 
 // ── Battery voltage ─────────────────────────────────────────
 
+#if defined(BOARD_PROFILE_RLCD_S3)
+// Waveshare ESP32-S3-RLCD-4.2: battery sense on GPIO4 (ADC1_CH3), 3x divider.
+// Use a plain linear conversion of the Arduino analogRead() result. We deliberately
+// avoid esp_adc_cal (legacy): on ESP32-S3 parts lacking the ADC calibration eFuse,
+// esp_adc_cal_characterize() fails and esp_adc_cal_raw_to_voltage() then returns 0,
+// which zeroes the reading. Attenuation is set to ADC_11db at boot, whose full
+// scale is ~3.1V, so raw*3.1/4095 is an accurate linear mapping here.
+float readBatteryVoltage() {
+    const int N = 16;
+    long sum = 0;
+    for (int i = 0; i < N; i++) {
+        sum += analogRead(PIN_BAT_ADC);
+        delayMicroseconds(100);
+    }
+    float avgRaw = (float)(sum / N);
+    float vAdc = avgRaw * (3.1f / 4095.0f);  // 11dB atten -> ~3.1V full scale
+    float vBat = vAdc * 3.0f;                 // 3x divider (battery -> ADC)
+    Serial.printf("[BAT] raw=%.1f adc=%.2fV vbat=%.2fV\n", avgRaw, vAdc, vBat);
+    return vBat;
+}
+#else
 float readBatteryVoltage() {
     const int SAMPLES = 16;
     const int DISCARD = 2;  // Discard highest and lowest outliers
@@ -214,6 +235,7 @@ float readBatteryVoltage() {
     return realBatteryVoltage;
 #endif
 }
+#endif
 
 // ── Stream helper ───────────────────────────────────────────
 

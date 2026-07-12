@@ -898,7 +898,7 @@ void setup() {
     ledInit();
     Serial.begin(115200);
     delay(3000);
-#if defined(BOARD_PROFILE_ESP32_C3_WROOM02) || defined(BOARD_PROFILE_SMT_WROOM32E) || defined(BOARD_PROFILE_YD_ESP32_S3_N16R8)
+#if defined(BOARD_PROFILE_ESP32_C3_WROOM02) || defined(BOARD_PROFILE_SMT_WROOM32E) || defined(BOARD_PROFILE_YD_ESP32_S3_N16R8) || defined(BOARD_PROFILE_RLCD_S3)
     analogReadResolution(12);
     analogSetAttenuation(ADC_11db);
 #endif
@@ -1021,8 +1021,12 @@ static bool decodeVoiceBmpToFrameBuffer(const uint8_t *bmpBytes, size_t bmpLen);
 void setup() {
     ledInit();
     Serial.begin(115200);
+#if defined(BOARD_PROFILE_RLCD_S3)
+    delay(800);    // RLCD powers on instantly; no long e-ink settle delay needed
+#else
     delay(3000);
-#if defined(BOARD_PROFILE_ESP32_C3_WROOM02) || defined(BOARD_PROFILE_SMT_WROOM32E) || defined(BOARD_PROFILE_YD_ESP32_S3_N16R8)
+#endif
+#if defined(BOARD_PROFILE_ESP32_C3_WROOM02) || defined(BOARD_PROFILE_SMT_WROOM32E) || defined(BOARD_PROFILE_YD_ESP32_S3_N16R8) || defined(BOARD_PROFILE_RLCD_S3)
     analogReadResolution(12);
     analogSetAttenuation(ADC_11db);
 #endif
@@ -1122,10 +1126,10 @@ void setup() {
 
     cacheSave(imgBuf, IMG_BUF_LEN);
     lastContentChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
-    syncNTP();
     Serial.println("Displaying image...");
     smartDisplay(imgBuf);
     ledFeedback("success");
+    syncNTP();   // moved after first paint so the screen lights ~5s sooner
     Serial.println("Display done");
     lastRenderedPeriod = currentPeriodIndex();
     ctx.lastClockTick = millis();
@@ -1506,24 +1510,50 @@ static void enterDeepSleep(int minutes, bool force) {
     Serial.flush();
     esp_sleep_enable_timer_wakeup((uint64_t)minutes * 60ULL * 1000000ULL);
 #if PIN_CFG_BTN >= 0
+    // Also allow the BOOT button (GPIO0) to wake the device from deep sleep.
+    // When running on battery there is no VBUS edge to cold-boot the chip, so a
+    // button press is the only way to power it back on. Without this, a device
+    // left in deep sleep on battery can only be revived by plugging in USB.
+    const int BOOT_WAKE_PIN = 0;
+    bool bootReady = true;
+    if (BOOT_WAKE_PIN != PIN_CFG_BTN) {
+        pinMode(BOOT_WAKE_PIN, INPUT_PULLUP);
+        unsigned long bootRelStart = millis();
+        while (digitalRead(BOOT_WAKE_PIN) == LOW && millis() - bootRelStart < 3000UL) {
+            delay(10);
+        }
+        delay(50);
+        bootReady = (digitalRead(BOOT_WAKE_PIN) == HIGH);
+    }
+
     pinMode(PIN_CFG_BTN, INPUT_PULLUP);
     unsigned long releaseStartedAt = millis();
     while (digitalRead(PIN_CFG_BTN) == LOW && millis() - releaseStartedAt < 3000UL) {
         delay(10);
     }
     delay(50);
-    bool wakeButtonReady = (digitalRead(PIN_CFG_BTN) == HIGH);
-    if (!wakeButtonReady) {
-        Serial.printf("[WAKE] GPIO%d is still LOW; timer-only wake for this sleep cycle\n", PIN_CFG_BTN);
+    bool cfgBtnReady = (digitalRead(PIN_CFG_BTN) == HIGH);
+
+    if (!cfgBtnReady || !bootReady) {
+        Serial.println("[WAKE] A wake button is still held LOW; timer-only wake this cycle");
     } else {
-        const uint64_t wakeMask = 1ULL << PIN_CFG_BTN;
+        uint64_t wakeMask = (1ULL << PIN_CFG_BTN);
+        if (BOOT_WAKE_PIN != PIN_CFG_BTN) wakeMask |= (1ULL << BOOT_WAKE_PIN);
 #if SOC_RTCIO_INPUT_OUTPUT_SUPPORTED
         rtc_gpio_pullup_en((gpio_num_t)PIN_CFG_BTN);
         rtc_gpio_pulldown_dis((gpio_num_t)PIN_CFG_BTN);
+        if (BOOT_WAKE_PIN != PIN_CFG_BTN) {
+            rtc_gpio_pullup_en((gpio_num_t)BOOT_WAKE_PIN);
+            rtc_gpio_pulldown_dis((gpio_num_t)BOOT_WAKE_PIN);
+        }
         esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 #else
         gpio_pullup_en((gpio_num_t)PIN_CFG_BTN);
         gpio_pulldown_dis((gpio_num_t)PIN_CFG_BTN);
+        if (BOOT_WAKE_PIN != PIN_CFG_BTN) {
+            gpio_pullup_en((gpio_num_t)BOOT_WAKE_PIN);
+            gpio_pulldown_dis((gpio_num_t)BOOT_WAKE_PIN);
+        }
 #endif
 #if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
         esp_deep_sleep_enable_gpio_wakeup(wakeMask, ESP_GPIO_WAKEUP_GPIO_LOW);
@@ -1532,7 +1562,7 @@ static void enterDeepSleep(int minutes, bool force) {
 #else
         esp_sleep_enable_ext1_wakeup(wakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
 #endif
-        Serial.printf("[WAKE] Timer + GPIO%d button wake enabled\n", PIN_CFG_BTN);
+        Serial.printf("[WAKE] Timer + button wake enabled (mask=0x%llx)\n", wakeMask);
     }
 #endif
     esp_deep_sleep_start();

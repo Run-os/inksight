@@ -780,6 +780,82 @@ void epdSleep() {
     EPD_Send_1(0x07, 0xA5); // deep sleep
 }
 
+#elif defined(EPD_PANEL_42_RLCD)
+// ── ESP32-S3-RLCD-4.2 reflective LCD (ST7305), 400x300, 1bpp ──
+// Driven by the vendor DisplayPort driver (see rlcd_bsp.h).
+
+#include "rlcd_bsp.h"
+
+#if (EPD_WIDTH != 400) || (EPD_HEIGHT != 300)
+#error "EPD_PANEL_42_RLCD only supports 400x300 (ESP32-S3-RLCD-4.2)"
+#endif
+
+static DisplayPort *g_rlcd = nullptr;
+
+static void rlcdEnsure() {
+    if (!g_rlcd) {
+        g_rlcd = new DisplayPort(
+            PIN_EPD_MOSI, PIN_EPD_SCK, PIN_EPD_DC, PIN_EPD_CS, PIN_EPD_RST, W, H);
+        g_rlcd->Init();
+    }
+}
+
+void gpioInit() {
+    pinMode(PIN_CFG_BTN, INPUT_PULLUP);
+    // Display pins are configured inside DisplayPort::Init().
+}
+
+void epdInit() {
+    rlcdEnsure();
+}
+
+void epdInitFast() {
+    rlcdEnsure();
+}
+
+void epdDisplay(const uint8_t *image) {
+    rlcdEnsure();
+    g_rlcd->ColorClear(0xFF);
+    g_rlcd->Blit1bpp(image, W, H, /*blackIsZero=*/true);
+    g_rlcd->Display();
+}
+
+void epdDisplayDeepClear(const uint8_t *image) {
+    epdDisplay(image);
+}
+
+void epdDisplayFast(const uint8_t *image) {
+    epdDisplay(image);
+}
+
+void epdPartialDisplay(uint8_t *data, int xStart, int yStart, int xEnd, int yEnd) {
+    epdPartialDisplayWithOld(data, nullptr, xStart, yStart, xEnd, yEnd);
+}
+
+bool epdSupportsPartialRefresh() {
+    // RLCD has no ghosting, so a cheap full repaint replaces partial refresh.
+    return false;
+}
+
+void epdPartialDisplayWithOld(uint8_t *data, const uint8_t *oldData,
+                              int xStart, int yStart, int xEnd, int yEnd) {
+    (void)data;
+    (void)oldData;
+    (void)xStart; (void)yStart; (void)xEnd; (void)yEnd;
+    // Reflective LCD: repaint the full frame from imgBuf (fast, no ghosting).
+    epdDisplay(imgBuf);
+}
+
+void epdSleep() {
+    // ST7305 keeps its last frame only while powered. Entering MCU deep sleep
+    // blanks it (expected for a reflective LCD, unlike e-ink). Release the
+    // driver so a fresh Init() runs after wake.
+    if (g_rlcd) {
+        delete g_rlcd;
+        g_rlcd = nullptr;
+    }
+}
+
 #else
 // ── Other panel sizes: GxEPD2 (hardware SPI) ─────────────────
 

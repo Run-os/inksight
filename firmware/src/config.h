@@ -74,6 +74,20 @@
 #define PIN_LED        -1
 #define PIN_RGB_LED    48
 #define PIN_AI_CHAT_SW -1
+#elif defined(BOARD_PROFILE_RLCD_S3)
+// ESP32-S3-RLCD-4.2 — 4.2" ST7305 reflective LCD (400x300), 16MB flash / 8MB PSRAM.
+// Display pins match the vendor example (MOSI=12, SCL=11, DC=5, CS=40, RST=41).
+#define PIN_EPD_MOSI   12
+#define PIN_EPD_SCK    11
+#define PIN_EPD_CS     40
+#define PIN_EPD_DC     5
+#define PIN_EPD_RST    41
+#define PIN_EPD_BUSY   -1     // RLCD has no BUSY line
+#define PIN_BAT_ADC    4      // battery sense: GPIO4 (ADC1_CH3), 3x divider (Waveshare RLCD-4.2)
+#define PIN_CFG_BTN    18     // KEY button (active low, GPIO18); BOOT(GPIO0) is download-mode only
+#define PIN_LED        -1
+#define PIN_RGB_LED    48
+#define PIN_AI_CHAT_SW -1
 #else
 #error "Unsupported board profile"
 #endif
