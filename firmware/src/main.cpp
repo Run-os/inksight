@@ -150,6 +150,9 @@ static WakeupReason detectWakeupReason() {
         case ESP_SLEEP_WAKEUP_EXT1:
         case ESP_SLEEP_WAKEUP_GPIO:
             Serial.println("[WAKE] Wakeup from button/GPIO");
+            // The press that woke us is still held; ignore it so it isn't treated
+            // as a short-press page flip. A fresh press after release will flip.
+            ctx.ignoreConfigButtonUntilRelease = true;
             return WakeupReason::BUTTON;
         case ESP_SLEEP_WAKEUP_UNDEFINED:
             Serial.println("[WAKE] Power on or reset");
@@ -2320,7 +2323,13 @@ static void checkConfigButton() {
 
             if (pressDuration >= (unsigned long)SHORT_PRESS_MIN_MS &&
                 pressDuration < (unsigned long)CFG_BTN_HOLD_MS) {
-                Serial.println("[BTN] Short press while awake; no action");
+                // Short press (50ms–2s): advance to the next server mode (next page).
+                // Long press (>= CFG_BTN_HOLD_MS) still enters the config portal.
+                if (ctx.state != DeviceState::PORTAL) {
+                    Serial.printf("[BTN] Short press %lums -> next page\n", pressDuration);
+                    triggerImmediateRefresh(true);
+                    ctx.ignoreConfigButtonUntilRelease = true;  // debounce until released
+                }
             }
         }
     }
