@@ -9,6 +9,7 @@
 #include <LittleFS.h>
 #include <mbedtls/base64.h>
 #include <time.h>
+#include <stdlib.h>     // setenv() for forcing the TZ (UTC+8) explicitly
 #include <sys/time.h>   // settimeofday / struct timeval for writing local RTC
 #include <cstring>
 #include <cctype>
@@ -1145,6 +1146,15 @@ bool postRuntimeMode(const char *mode) {
 // Time policy: prefer the local RTC, then fetch NTP. If NTP differs, adopt the
 // network time and write it back to the local RTC (settimeofday). If NTP is
 // unreachable, keep the local RTC instead of resetting to 00:00.
+//
+// configTime() is only invoked once (SNTP init); subsequent calls just poll
+// getLocalTime() so we never restart the SNTP client mid-sync.
+static bool sntpStarted = false;
+
+bool rtcTimeValid() {
+    return time(nullptr) > TIME_LOCAL_VALID_MIN;
+}
+
 void syncNTP() {
     time_t tLocal = time(nullptr);
     bool localValid = (tLocal > TIME_LOCAL_VALID_MIN);
@@ -1152,9 +1162,31 @@ void syncNTP() {
     struct tm lt;
     if (localValid) localtime_r(&tLocal, &lt);
 
-    configTime(NTP_UTC_OFFSET, 0, "ntp.aliyun.com", "pool.ntp.org", "time.google.com");
+    // Force UTC+8 (China Standard Time) explicitly. configTime() derives its
+    // TZ string from NTP_UTC_OFFSET, but some ESP32 Arduino cores emit a TZ
+    // string that is not parsed correctly for positive offsets (e.g. they may
+    // omit the leading '+' so localtime_r() falls back to UTC). Re-assert the
+    // zone around configTime() so every localtime_r()/mktime() call below uses
+    // Beijing time, not UTC. (POSIX TZ sign is inverted: CST-8 == UTC+8.)
+    setenv("TZ", "CST-8", 1);
+    tzset();
+    if (!sntpStarted) {
+        configTime(NTP_UTC_OFFSET, 0, "ntp.aliyun.com", "pool.ntp.org", "time.google.com");
+        setenv("TZ", "CST-8", 1);   // re-assert: configTime() overwrites TZ
+        tzset();
+        sntpStarted = true;
+    }
+
+    // Poll up to ~12s for the first SNTP sync (cold connect can be slow).
     struct tm info;
-    if (getLocalTime(&info, 5000)) {
+    bool ok = false;
+    for (int attempt = 0; attempt < 3 && !ok; attempt++) {
+        if (getLocalTime(&info, 5000)) { ok = true; break; }
+        Serial.println("[NTP] getLocalTime timeout, retrying...");
+        delay(500);
+    }
+
+    if (ok) {
         time_t tNet = mktime(&info);
         long long diff = (long long)tNet - (long long)tLocal;
         if (!localValid) {

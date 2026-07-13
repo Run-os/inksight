@@ -65,3 +65,18 @@
   原生渲染须新增 `hanzi_font` 16×16 点阵（建议 3500 常用字 ~112KB，放 Flash/PSRAM）+ `draw7Seg` 数码管时间 + `drawMixed` 中英文混排。
 - 图片模式：后端把图预处理成内容区尺寸(400×214)的 1-bit BMP 下发，设备原生画 chrome 并 blit 图片缓冲，本地 5 张缓存用 PSRAM。
 - 实施里程碑建议（详见文档 §7）：字体与基础绘制 → UI chrome → 后端骨架(待办) → 待办闭环 → 图片后端 → 图片闭环 → 离线/真机验证。
+
+## 固件时间/时区（重要踩坑）
+- 设备显示时间走 `display.cpp` 的 `localtime_r(time(nullptr), &ti)`，依赖 **TZ 环境变量**。
+- `configTime(NTP_UTC_OFFSET, 0, ...)` 的 `NTP_UTC_OFFSET=8*3600` 已设好，但某些 ESP32
+  Arduino core 用该偏移生成的 TZ 字符串对**正偏移**解析失败（localtime_r 回退 UTC），
+  现象：设备显示 UTC（北京时间−8h），如真实 7/14 01:54 屏幕显示 7/13 17:54。
+- **已修复**：`network.cpp::syncNTP()` 在 `configTime()` 前后都显式
+  `setenv("TZ","CST-8",1); tzset();`（POSIX TZ 符号反向：`CST-8`==UTC+8）。
+  这样 `localtime_r`/`mktime` 稳定用北京时间，不被 configTime 覆盖。
+- 改时区只需改这两处 `setenv` 的字符串（如海外部署）。`mktime` 写回 RTC 的逻辑与 TZ 一致，无双偏移 bug。
+- **时钟/电量动态刷新**：状态栏时钟在 `display.cpp::drawStatusBar` 用 `time(nullptr)`+`localtime_r` 实时取，
+  但屏幕只在 `renderTodoScreen` 时重绘。要让时钟"走动"+电量实时，需在 `loop()` 周期重绘。
+  实现：`main.cpp` 缓存上次拉取的待办项到 `g_todoItems/g_todoCount`，新增 `repaintTodoView()`（用缓存项+
+  实时 `readBatteryVoltage()` 整屏重绘、不重取后端），`loop()` 检测 `currentMinuteOfDay()` 变化即触发。
+  图片视图(`decodeBmpToImgBuf` 直接写 imgBuf、无状态栏)不含时钟，故动态刷新仅针对 TODO 视图。

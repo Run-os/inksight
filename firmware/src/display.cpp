@@ -298,6 +298,12 @@ static const uint16_t GLYPH_WAN[16] = {
     0x4934, 0x4850, 0x7850, 0x4892, 0x0312, 0x0C1F, 0x0000, 0x0000,
 };
 
+// 16x16 WiFi icon (3 nested arcs + center dot). Black = 1.
+static const uint16_t GLYPH_WIFI[16] = {
+    0x0300, 0x0480, 0x0840, 0x1020, 0x2010, 0x4008, 0x0000, 0x0C30,
+    0x1008, 0x2004, 0x0FF0, 0x0000, 0x0000, 0x0000, 0x0180, 0x0180,
+};
+
 int currentPeriodIndex() {
     if (curHour >= 23 || curHour < 2) return 0;
     if (curHour < 5) return 1;
@@ -532,9 +538,9 @@ void smartDisplay(const uint8_t *image) {
 // pixel / ink style: pure black-on-white, thin solid rules, dashed dividers.
 
 #define UI_SB_H   52      // status bar height
-#define UI_FT_H   18      // footer height
+#define UI_FT_H   26      // footer height (taller, top border raised)
 #define UI_ROW_H  30      // todo row height
-#define UI_PER_PAGE 7     // todo items per page
+#define UI_PER_PAGE 6     // todo items per page (fixed)
 
 // Hollow rectangle outline (thin 1px rule).
 static void outlineRect(int x, int y, int w, int h) {
@@ -561,22 +567,6 @@ static void segFill(int x, int y, int sw, int sh) {
 }
 
 // ── Pixel icons ─────────────────────────────────────────────
-static void drawClipboard(int x, int y) {
-    outlineRect(x+2, y+3, 13, 14);                 // board
-    segFill(x+4, y, 9, 4);                          // clip top
-    for (int xx = x+2; xx < x+15; xx++)             // board header line
-        if (y+6 >= 0 && y+6 < H) imgBuf[(y+6)*(W/8) + xx/8] &= ~(0x80 >> (xx%8));
-}
-
-static void drawBattery(int x, int y, int pct) {
-    outlineRect(x, y+2, 22, 12);                    // shell
-    segFill(x+22, y+5, 2, 6);                       // positive nub
-    int fillw = (pct * 18) / 100;
-    if (fillw > 18) fillw = 18;
-    if (fillw < 2)  fillw = 2;
-    segFill(x+2, y+4, fillw, 8);                    // charge level
-}
-
 static void drawCheckbox(int x, int y, bool checked) {
     outlineRect(x, y, 14, 14);
     if (checked) {                                  // simple check mark
@@ -604,8 +594,7 @@ static const char *WEEKDAY_CN[7] = {
 };
 
 // ── Status bar ──────────────────────────────────────────────
-static void drawStatusBar(int batteryPct) {
-    drawClipboard(4, 6);
+static void drawStatusBar(int batteryPct, bool wifiConnected) {
     // Clock + date both read from the system RTC (kept accurate by syncNTP).
     time_t now = time(nullptr);
     struct tm ti; localtime_r(&now, &ti);
@@ -613,7 +602,7 @@ static void drawStatusBar(int batteryPct) {
     // Clock as plain half-width ASCII "HH:MM" (same size as body text)
     char hhmm[6];
     snprintf(hhmm, sizeof(hhmm), "%02d:%02d", ti.tm_hour, ti.tm_min);
-    int cx = 26;
+    int cx = 4;
     for (char *p = hhmm; *p; p++) {
         const uint8_t *g = ascii16_lookup((uint8_t)*p);
         if (g) drawAscii16(cx, lineY, g);
@@ -624,8 +613,21 @@ static void drawStatusBar(int batteryPct) {
     snprintf(date, sizeof(date), "%02d/%02d %s",
              ti.tm_mon + 1, ti.tm_mday, WEEKDAY_CN[ti.tm_wday % 7]);
     drawMixed(cx + 6, lineY, date, 1);
-    // battery
-    drawBattery(W - 26, 9, batteryPct);
+
+    // ── Right side: WiFi icon (when connected) + "电量：xx%" ──
+    char batt[16];
+    snprintf(batt, sizeof(batt), "电量:%d%%", batteryPct);
+    int battW = measureMixed(batt, 1);          // CJK + half-width ASCII
+    int wifiW = 16, gap = 6;
+    int rightX = W - 4;                          // right margin
+    int blockW = (wifiConnected ? (wifiW + gap) : 0) + battW;
+    int curX = rightX - blockW;
+    if (wifiConnected) {
+        drawGlyph16(imgBuf, W, H, curX, lineY, GLYPH_WIFI);
+        curX += wifiW + gap;
+    }
+    drawMixed(curX, lineY, batt, 1);
+
     // separator rule under status bar
     for (int xx = 0; xx < W; xx++)
         if (UI_SB_H >= 0 && UI_SB_H < H) imgBuf[UI_SB_H*(W/8) + xx/8] &= ~(0x80 >> (xx%8));
@@ -658,18 +660,19 @@ static void drawTodoList(const TodoItem *items, int count) {
 
 // ── Footer ──────────────────────────────────────────────────
 static void drawFooter() {
-    int fy = H - UI_FT_H;
+    int fy = H - UI_FT_H;                          // top border of footer
     for (int xx = 0; xx < W; xx++)
         if (fy >= 0 && fy < H) imgBuf[fy*(W/8) + xx/8] &= ~(0x80 >> (xx%8));
-    drawMiniList(8, H - 15);
-    drawMixed(16, H - 16, "待办", 1);
-    drawMixed(W - 6 - measureMixed("— 诸事有序", 1) - 1, H - 16, "— 诸事有序", 1);
+    int contentY = H - UI_FT_H + (UI_FT_H - 16) / 2;   // vertically center 16px line
+    drawMiniList(8, contentY + 1);
+    drawMixed(24, contentY, "待办", 1);           // wider gap after the mini-list icon
+    drawMixed(W - 6 - measureMixed("— 诸事有序", 1) - 1, contentY, "— 诸事有序", 1);
 }
 
 // ── Composite native todo screen ────────────────────────────
-void renderTodoScreen(const TodoItem *items, int count, int page, int totalPages, int batteryPct) {
+void renderTodoScreen(const TodoItem *items, int count, int page, int totalPages, int batteryPct, bool wifiConnected, bool autoDisplay) {
     memset(imgBuf, 0xFF, IMG_BUF_LEN);
-    drawStatusBar(batteryPct);
+    drawStatusBar(batteryPct, wifiConnected);
     drawTodoList(items, count);
     drawFooter();
     // pagination hint (bottom-right of content area, pure ASCII, no offset)
@@ -677,5 +680,5 @@ void renderTodoScreen(const TodoItem *items, int count, int page, int totalPages
     snprintf(pg, sizeof(pg), "%d / %d", page + 1, totalPages);
     int pgw = measureMixed(pg, 1);
     drawAsciiText(W - 6 - pgw - 1, H - UI_FT_H - 14, pg, 1);
-    smartDisplay(imgBuf);
+    if (autoDisplay) smartDisplay(imgBuf);
 }

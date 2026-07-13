@@ -43,6 +43,9 @@ struct TodoItem {
 };
 
 // Render the full native todo screen: status bar + todo rows + footer.
-void renderTodoScreen(const TodoItem *items, int count, int page, int totalPages, int batteryPct);
+// autoDisplay=false leaves the framebuffer drawn but does not push to the
+// panel, so the caller can skip a redundant repaint via a checksum.
+void renderTodoScreen(const TodoItem *items, int count, int page, int totalPages,
+                      int batteryPct, bool wifiConnected, bool autoDisplay = true);
 
 #endif // INKSIGHT_DISPLAY_H

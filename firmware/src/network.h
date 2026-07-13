@@ -12,6 +12,10 @@ extern bool g_suppressAbortCheck;
 // ── Time state (updated by syncNTP / tickTime) ──────────────
 extern int curHour, curMin, curSec;
 
+// True when the system RTC holds a real (post-2023) time, not the 1970 epoch
+// left behind by a power loss with no battery-backed RTC.
+bool rtcTimeValid();
+
 // ── WiFi ────────────────────────────────────────────────────
 
 // Connect to WiFi using stored credentials. Returns true on success.

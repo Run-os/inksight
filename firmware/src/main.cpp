@@ -20,6 +20,7 @@
 #include "epd_driver.h"
 #include "display.h"
 #include "offline_cache.h"
+#include <time.h>       // time()/localtime_r for the live clock repaint in loop()
 
 // ── Shared framebuffer (1bpp, black=0 / white=1, MSB-first) ──
 uint8_t imgBuf[IMG_BUF_LEN];
@@ -54,6 +55,7 @@ struct DeviceContext {
     // Timing
     unsigned long setupDoneAt = 0;
     unsigned long lastClockTick = 0;
+    unsigned long lastNtpSyncAt = 0;
     unsigned long portalStartedAt = 0;
     unsigned long portalTimeoutMs = 0;
 
@@ -68,6 +70,36 @@ static DeviceContext ctx;
 // image viewer (and cycles images). Used by the v2 backend integration.
 enum class AppView : uint8_t { TODO, IMAGE };
 static AppView g_view = AppView::TODO;
+
+// Todo pagination (v2): fixed 6 rows per page; KEY short-press pages through.
+static const int TODO_PER_PAGE = 6;
+static int g_todoPage = 0;
+static int g_todoTotalPages = 1;
+
+// Cache of the last successfully fetched todo items. Lets the clock/battery be
+// repainted live (every minute) in loop() WITHOUT re-querying the backend.
+// The TodoItem text/remind pointers reference static buffers in network.cpp
+// (g_todoText/g_todoRem) that persist across fetches, so they stay valid.
+static TodoItem g_todoItems[TODO_MAX];
+static int g_todoCount = 0;
+
+// Minute of day (hour*60 + min) shown on the last paint; drives the live tick.
+static int g_lastPaintMinute = -1;
+
+// Battery % from a divider-scaled voltage (matches board ref 03_ADC_Test: 3.0V
+// empty, 4.12V full, linear). Used by both the fetch paint and the live repaint.
+static int batteryPctFromVoltage(float vb) {
+    int pct = (int)((vb - 3.0f) / (4.12f - 3.0f) * 100.0f);
+    if (pct < 0) pct = 0; else if (pct > 100) pct = 100;
+    return pct;
+}
+
+// Current Beijing minute-of-day (TZ is set to CST-8 in syncNTP()).
+static int currentMinuteOfDay() {
+    time_t t = time(nullptr);
+    struct tm ti; localtime_r(&t, &ti);
+    return ti.tm_hour * 60 + ti.tm_min;
+}
 
 // ── Activity flags (focus listening / always active) ────────
 static bool focusListening = false;
@@ -133,6 +165,7 @@ static void showBootScreen() {
 
 // ── Forward declarations ────────────────────────────────────
 static void checkConfigButton();
+static void refreshTodoView(bool forceRepaint);
 static void triggerImmediateRefresh(bool nextMode = false, bool keepWiFi = false, bool skipNtp = false);
 static void handleLiveMode();
 static bool waitForContentReady();
@@ -286,6 +319,65 @@ static void handleWiFiFailure() {
     }
     Serial.println("[DIAG] WiFi still unreachable -> captive portal");
     enterPortalMode(PortalEntryReason::AUTO_WIFI_FAILURE);
+}
+
+// ── Todo view (v2 backend) ──────────────────────────────────
+// Fetches the latest todos, slices to the current page (TODO_PER_PAGE rows),
+// and repaints only when the content actually changed (unless forceRepaint).
+static void refreshTodoView(bool forceRepaint) {
+    TodoItem todoItems[TODO_MAX];
+    int todoCount = 0;
+    if (!fetchTodos(todoItems, todoCount, TODO_MAX) || todoCount == 0) {
+        Serial.println("[TODO] fetch empty/failed; keeping current screen");
+        return;
+    }
+    // Cache items so the live clock/battery repaint (loop) can reuse them
+    // without hitting the backend again.
+    g_todoCount = todoCount;
+    for (int i = 0; i < todoCount; i++) g_todoItems[i] = todoItems[i];
+
+    int totalPages = (todoCount + TODO_PER_PAGE - 1) / TODO_PER_PAGE;
+    if (totalPages < 1) totalPages = 1;
+    if (g_todoPage >= totalPages) g_todoPage = 0;
+    g_todoTotalPages = totalPages;
+
+    int start = g_todoPage * TODO_PER_PAGE;
+    int n = todoCount - start;
+    if (n > TODO_PER_PAGE) n = TODO_PER_PAGE;
+
+    int pct = batteryPctFromVoltage(readBatteryVoltage());
+    bool wifi = (WiFi.status() == WL_CONNECTED);
+    renderTodoScreen(g_todoItems + start, n, g_todoPage, totalPages, pct, wifi, false);
+    uint32_t cs = computeChecksum(imgBuf, IMG_BUF_LEN);
+    if (forceRepaint || cs != lastContentChecksum) {
+        smartDisplay(imgBuf);
+        lastContentChecksum = cs;
+        cacheSave(imgBuf, IMG_BUF_LEN);
+        g_lastPaintMinute = currentMinuteOfDay();
+    }
+    Serial.printf("[TODO] rendered page %d/%d (%d items)\n", g_todoPage + 1, totalPages, n);
+}
+
+// Repaint the current todo page with the LIVE clock (the status bar reads the
+// system RTC via time()/localtime_r) and a FRESH battery reading, WITHOUT
+// re-querying the backend. Driven from loop() whenever the displayed minute
+// changes, so the clock ticks and the battery % stays current. (RLCD has no
+// partial refresh, so this is a full-screen repaint — the same idea as the
+// board example 04_I2C_PCF85063, which re-reads the time every loop() tick.)
+static void repaintTodoView() {
+    if (g_todoCount <= 0) return;
+    int totalPages = g_todoTotalPages < 1 ? 1 : g_todoTotalPages;
+    int start = g_todoPage * TODO_PER_PAGE;
+    int n = g_todoCount - start;
+    if (n > TODO_PER_PAGE) n = TODO_PER_PAGE;
+    if (n < 0) n = 0;
+    int pct = batteryPctFromVoltage(readBatteryVoltage());
+    bool wifi = (WiFi.status() == WL_CONNECTED);
+    renderTodoScreen(g_todoItems + start, n, g_todoPage, totalPages, pct, wifi, true);
+    lastContentChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
+    g_lastPaintMinute = currentMinuteOfDay();
+    // Note: we intentionally do NOT cacheSave() here (content is unchanged);
+    // only the status-bar battery text differs, which is irrelevant offline.
 }
 
 // ── Live mode (temporary online window) ─────────────────────
@@ -534,9 +626,24 @@ static void checkConfigButton() {
                     Serial.printf("[BTN] Short press %lums\n", pressDuration);
 #if INKSIGHT_BACKEND_V2
                     if (g_view == AppView::TODO) {
-                        Serial.println("[BTN] TODO -> IMAGE view");
-                        g_view = AppView::IMAGE;
-                        triggerImmediateRefresh(false);  // fetch first image
+                        if (g_todoTotalPages <= 1) {
+                            // Few todos (<=6): go straight to the image viewer.
+                            Serial.println("[BTN] TODO -> IMAGE view");
+                            g_view = AppView::IMAGE;
+                            triggerImmediateRefresh(false);  // fetch first image
+                        } else {
+                            // Multiple pages: KEY pages through todos; pressing
+                            // past the last page switches to the image viewer.
+                            g_todoPage++;
+                            if (g_todoPage >= g_todoTotalPages) {
+                                g_todoPage = 0;
+                                g_view = AppView::IMAGE;
+                                triggerImmediateRefresh(false);
+                            } else {
+                                Serial.printf("[BTN] TODO page %d/%d\n", g_todoPage + 1, g_todoTotalPages);
+                                refreshTodoView(true);
+                            }
+                        }
                     } else {
                         Serial.println("[BTN] IMAGE -> next image");
                         triggerImmediateRefresh(true);   // next image
@@ -588,7 +695,7 @@ void setup() {
             {"阅读《三体》第 3 章", false, "20:00"},
             {"健身 run 30 分钟", false, "21:00"},
         };
-        renderTodoScreen(demo, 6, 0, 3, 87);
+        renderTodoScreen(demo, 6, 0, 1, 87, false);
         delay(2500);
     }
 #endif
@@ -642,21 +749,7 @@ void setup() {
     // ── Default view: todo list pulled from inksight-server ──
     Serial.println("Fetching todos...");
     ledFeedback("downloading");
-    {
-        TodoItem todoItems[TODO_MAX];
-        int todoCount = 0;
-        if (fetchTodos(todoItems, todoCount, TODO_MAX) && todoCount > 0) {
-            float vb = readBatteryVoltage();
-            int pct = (int)((vb - 3.0f) / (4.2f - 3.0f) * 100.0f);
-            if (pct < 0) pct = 0; else if (pct > 100) pct = 100;
-            renderTodoScreen(todoItems, todoCount, 0, 1, pct);
-            cacheSave(imgBuf, IMG_BUF_LEN);
-            lastContentChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
-            Serial.printf("Todos rendered: %d items\n", todoCount);
-        } else {
-            Serial.println("Todo fetch failed; keeping demo list on screen");
-        }
-    }
+    refreshTodoView(true);   // renders real todos; keeps demo screen if fetch fails
     ledFeedback("success");
     syncNTP();   // after first paint so the screen lights sooner
     Serial.println("Display done");
@@ -699,6 +792,19 @@ void loop() {
         }
     }
 
+    // ── Live clock + battery: repaint the todo view when the minute changes ──
+    // The board example 04_I2C_PCF85063 reads the time every loop() tick and
+    // refreshes the display. For a HH:MM status bar a per-minute full repaint
+    // (RLCD's only refresh mode) is the right granularity to keep the clock
+    // ticking and the battery % fresh — without re-querying the backend.
+    if (ctx.state == DeviceState::DISPLAYING && g_view == AppView::TODO && g_todoCount > 0) {
+        int m = currentMinuteOfDay();
+        if (m != g_lastPaintMinute) {
+            g_lastPaintMinute = m;
+            repaintTodoView();
+        }
+    }
+
     if (millis() - ctx.setupDoneAt >= refreshIntervalMs()) {
 #if DEBUG_MODE
         Serial.printf("[DEBUG] %d min elapsed, refreshing content...\n", DEBUG_REFRESH_MIN);
@@ -707,19 +813,7 @@ void loop() {
 #endif
 #if INKSIGHT_BACKEND_V2
         if (g_view == AppView::TODO) {
-            TodoItem todoItems[TODO_MAX];
-            int todoCount = 0;
-            if (fetchTodos(todoItems, todoCount, TODO_MAX) && todoCount > 0) {
-                float vb = readBatteryVoltage();
-                int pct = (int)((vb - 3.0f) / (4.2f - 3.0f) * 100.0f);
-                if (pct < 0) pct = 0; else if (pct > 100) pct = 100;
-                renderTodoScreen(todoItems, todoCount, 0, 1, pct);
-                uint32_t cs = computeChecksum(imgBuf, IMG_BUF_LEN);
-                if (cs != lastContentChecksum) {
-                    smartDisplay(imgBuf);
-                    lastContentChecksum = cs;
-                }
-            }
+            refreshTodoView(false);
         } else {
             triggerImmediateRefresh();
         }
@@ -727,6 +821,28 @@ void loop() {
         triggerImmediateRefresh();
 #endif
         ctx.setupDoneAt = millis();
+    }
+
+    // ── Periodic NTP resync (fixes "00:00" after a restart) ──
+    // While the RTC is still at the 1970 epoch we retry aggressively (30s);
+    // once a valid time is set we keep it fresh every 5 minutes. On the
+    // invalid→valid transition we repaint the current view so the clock shows.
+    if (WiFi.status() == WL_CONNECTED) {
+        bool rtcInvalid = !rtcTimeValid();
+        unsigned long ntpInterval = rtcInvalid ? 30000UL : 300000UL;
+        if (millis() - ctx.lastNtpSyncAt >= ntpInterval) {
+            bool wasInvalid = rtcInvalid;
+            syncNTP();
+            ctx.lastNtpSyncAt = millis();
+            if (wasInvalid && rtcTimeValid()) {
+                Serial.println("[NTP] RTC became valid; repainting current view");
+                if (g_view == AppView::TODO) {
+                    refreshTodoView(true);
+                } else {
+                    triggerImmediateRefresh(false);
+                }
+            }
+        }
     }
 
     if (WiFi.status() == WL_CONNECTED) {

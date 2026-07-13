@@ -20,7 +20,11 @@ W, H = 400, 300
 WHITE, BLACK = 255, 0
 
 # 与 firmware/src/display.cpp 一致的布局常量
-UI_SB_H, UI_FT_H, UI_ROW_H, UI_PER_PAGE = 52, 18, 30, 7
+UI_SB_H, UI_FT_H, UI_ROW_H, UI_PER_PAGE = 52, 26, 30, 6
+
+# 16x16 WiFi 图标（与固件 GLYPH_WIFI 同构，bit15=最左列，黑=1）
+GLYPH_WIFI = [0x0300, 0x0480, 0x0840, 0x1020, 0x2010, 0x4008, 0x0000, 0x0C30,
+              0x1008, 0x2004, 0x0FF0, 0x0000, 0x0000, 0x0000, 0x0180, 0x0180]
 
 # ── 5x7 ASCII 字体（与 display.cpp::getGlyph 一致）─────────
 FONT5x7 = {
@@ -264,15 +268,30 @@ def draw_mini_list(px, x, y):
         for xx in range(x+6, x+14):
             px_set(px, xx, y+r*6+2)
 
-def draw_status_bar(px, hhmm, date, battery_pct):
-    draw_clipboard(px, 4, 6)
+def draw_wifi(px, x, y):
+    for r in range(16):
+        bits = GLYPH_WIFI[r]
+        for c in range(16):
+            if bits & (1 << (15 - c)):
+                px_set(px, x + c, y + r)
+
+def draw_status_bar(px, hhmm, date, battery_pct, wifi_connected=True):
     line_y = (UI_SB_H - 16) // 2                     # 垂直居中 16px 行
-    cx = 26
+    cx = 4
     for ch in hhmm:
         render_ascii16(px, ord(ch), cx, line_y)      # 普通半角数字 HH:MM（同正文大小）
         cx += 9
     render_mixed(px, date, cx + 6, line_y, 1)        # 日期：MM/DD 星期X（同基线）
-    draw_battery(px, W-26, 9, battery_pct)
+    # 右侧：WiFi 图标（已连接时）+ "电量:xx%"
+    batt = "电量:%d%%" % battery_pct
+    batt_w = measure_mixed(batt, 1)
+    wifi_w, gap = 16, 6
+    block_w = (wifi_w + gap if wifi_connected else 0) + batt_w
+    cur_x = (W - 4) - block_w
+    if wifi_connected:
+        draw_wifi(px, cur_x, line_y)
+        cur_x += wifi_w + gap
+    render_mixed(px, batt, cur_x, line_y, 1)
     for xx in range(W):
         px_set(px, xx, UI_SB_H)                      # 状态栏底线
 
@@ -301,14 +320,16 @@ def draw_footer(px):
     fy = H - UI_FT_H
     for xx in range(W):
         px_set(px, xx, fy)
-    draw_mini_list(px, 8, H - 15)
-    render_mixed(px, "待办", 16, H - 16, 1)
-    render_mixed(px, "— 诸事有序", W - 6 - measure_mixed("— 诸事有序", 1) - 1, H - 16, 1)
+    content_y = H - UI_FT_H + (UI_FT_H - 16) // 2
+    draw_mini_list(px, 8, content_y + 1)
+    render_mixed(px, "待办", 24, content_y, 1)   # 图标与文字间距加大
+    render_mixed(px, "— 诸事有序", W - 6 - measure_mixed("— 诸事有序", 1) - 1, content_y, 1)
 
-def render_page(out_path, items, hhmm="21:47", date="07/13 星期一", battery_pct=87, page=0, total=3):
+def render_page(out_path, items, hhmm="21:47", date="07/13 星期一", battery_pct=87,
+                wifi_connected=True, page=0, total=3):
     img = Image.new("L", (W, H), WHITE)
     px = img.load()
-    draw_status_bar(px, hhmm, date, battery_pct)
+    draw_status_bar(px, hhmm, date, battery_pct, wifi_connected)
     draw_todo_list(px, items)
     draw_footer(px)
     pg = "%d / %d" % (page + 1, total)
