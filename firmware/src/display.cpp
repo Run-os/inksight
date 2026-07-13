@@ -112,34 +112,37 @@ const uint8_t* getGlyph(char c) {
 
 // ── Draw scaled text into imgBuf ────────────────────────────
 
-void drawText(const char *msg, int x, int y, int scale) {
-    int rowBytes = W / 8;
-    int len = strlen(msg);
+// Forward decl: ascii18 proportional glyph renderer (defined below).
+static void drawAscii18(int x, int y, const uint32_t *g, int scale);
 
-    for (int ci = 0; ci < len; ci++) {
-        const uint8_t *glyph = getGlyph(msg[ci]);
-        int cx = x + ci * (5 * scale + scale);
-        for (int col = 0; col < 5; col++) {
-            for (int row = 0; row < 7; row++) {
-                if (glyph[col] & (1 << row)) {
-                    for (int dy = 0; dy < scale; dy++) {
-                        for (int dx = 0; dx < scale; dx++) {
-                            int px = cx + col * scale + dx;
-                            int py = y + row * scale + dy;
-                            if (px >= 0 && px < W && py >= 0 && py < H)
-                                imgBuf[py * rowBytes + px / 8] &= ~(0x80 >> (px % 8));
-                        }
-                    }
-                }
-            }
-        }
+// drawText now renders with the ascii18 proportional font (Inter @18px) scaled by
+// integer `scale`. `y` is the cap-top row (uppercase top). Only ASCII 0x20-0x7E
+// is supported here — use drawMixed() for CJK text.
+void drawText(const char *msg, int x, int y, int scale) {
+    if (!msg) return;
+    if (scale < 1) scale = 1;
+    int cx = x;
+    for (const char *p = msg; *p; p++) {
+        uint8_t c = (uint8_t)*p;
+        if (c < ASCII18_FIRST || c > ASCII18_LAST) { cx += 6 * scale; continue; }
+        const uint32_t *g = ascii18_lookup(c);
+        if (g) drawAscii18(cx, y - ASCII18_CAP * scale, g, scale);
+        cx += ascii18_width[c - ASCII18_FIRST] * scale + scale;
     }
 }
 
-// ── Helper: calculate text width in pixels ──────────────────
+// ── Helper: measured pixel width of an ASCII string in the ascii18 font ──
 
-static int textWidth(int charCount, int scale) {
-    return charCount * (5 * scale + scale) - scale;
+static int asciiTextWidth(const char *text, int scale) {
+    if (!text) return 0;
+    if (scale < 1) scale = 1;
+    int w = 0;
+    for (const char *p = text; *p; p++) {
+        uint8_t c = (uint8_t)*p;
+        if (c < ASCII18_FIRST || c > ASCII18_LAST) { w += 6 * scale; continue; }
+        w += ascii18_width[c - ASCII18_FIRST] * scale + scale;
+    }
+    return w > 0 ? w - scale : 0;
 }
 
 static void fillRect(int x, int y, int w, int h) {
@@ -163,24 +166,24 @@ void showSetupScreen(const char *apName) {
     fillRect(W * 8 / 100, H * 72 / 100, W * 84 / 100, H * 2 / 100);
 
     const char *title = "SETUP WIFI";
-    int titleScale = (H < 200) ? 2 : 4;
-    int titleX = (W - textWidth(strlen(title), titleScale)) / 2;
+    int titleScale = (H < 200) ? 1 : 2;
+    int titleX = (W - asciiTextWidth(title, titleScale)) / 2;
     int titleY = H * 15 / 100;
     drawText(title, titleX, titleY, titleScale);
 
     const char *line1 = "CONNECT TO";
-    int bodyScale = (H < 200) ? 1 : 2;
-    int line1X = (W - textWidth(strlen(line1), bodyScale)) / 2;
+    int bodyScale = 1;
+    int line1X = (W - asciiTextWidth(line1, bodyScale)) / 2;
     int line1Y = H * 36 / 100;
     drawText(line1, line1X, line1Y, bodyScale);
 
-    int apScale = (H < 200) ? 2 : 3;
-    int apX = (W - textWidth(strlen(apName), apScale)) / 2;
+    int apScale = (H < 200) ? 1 : 2;
+    int apX = (W - asciiTextWidth(apName, apScale)) / 2;
     int apY = H * 46 / 100;
     drawText(apName, apX, apY, apScale);
 
     const char *line3 = "OPEN BROWSER";
-    int line3X = (W - textWidth(strlen(line3), bodyScale)) / 2;
+    int line3X = (W - asciiTextWidth(line3, bodyScale)) / 2;
     int line3Y = H * 62 / 100;
     drawText(line3, line3X, line3Y, bodyScale);
 
@@ -193,15 +196,15 @@ void showSetupScreen(const char *apName) {
 void showDiagnostic(const char *line1, const char *line2, const char *line3, const char *line4) {
     memset(imgBuf, 0xFF, IMG_BUF_LEN);
 
-    int titleScale = (H < 200) ? 2 : 3;
-    int bodyScale  = (H < 200) ? 1 : 2;
+    int titleScale = (H < 200) ? 1 : 2;
+    int bodyScale  = 1;
 
     int y = H * 10 / 100;
-    int lh = 7 * titleScale + titleScale * 2;
-    int blh = 7 * bodyScale + bodyScale * 2;
+    int lh = 22 * titleScale;
+    int blh = 24 * bodyScale;
 
     if (line1 && line1[0]) {
-        int x = (W - textWidth(strlen(line1), titleScale)) / 2;
+        int x = (W - asciiTextWidth(line1, titleScale)) / 2;
         if (x < 4) x = 4;
         drawText(line1, x, y, titleScale);
         y += lh + 4;
@@ -228,10 +231,9 @@ void showDiagnostic(const char *line1, const char *line2, const char *line3, con
 void showError(const char *msg) {
     memset(imgBuf, 0xFF, IMG_BUF_LEN);
 
-    int scale = (H < 200) ? 1 : 2;
-    int len = strlen(msg);
-    int startX = (W - textWidth(len, scale)) / 2;
-    int startY = H / 2 - (7 * scale) / 2;
+    int scale = 1;
+    int startX = (W - asciiTextWidth(msg, scale)) / 2;
+    int startY = H / 2 - (20 * scale) / 2;
 
     drawText(msg, startX, startY, scale);
 
@@ -346,30 +348,16 @@ static void drawGlyph16(uint8_t *buffer, int width, int height, int x, int y, co
 
 // ── CJK + ASCII mixed rendering (native todo text) ──────────
 
-// Draw one 8x16 half-width ASCII glyph from ascii16 table (same TTF as CJK,
-// mono-hinted). bit7 = leftmost column, black = 1. Aligns to the CJK 16px cell.
-static void drawAscii16(int x, int y, const uint8_t *g) {
+// Draw one proportional ASCII glyph from the ascii18 table (Inter TTF @18px).
+// Each row is a uint32_t scanline, bit(ASCII18_W-1)=leftmost column, black=1.
+// `scale` = integer magnification (1 = native 20px cell). `y` is the top row of
+// the cell; callers that want the cap top at Y should pass Y - ASCII18_CAP*scale.
+static void drawAscii18(int x, int y, const uint32_t *g, int scale) {
+    if (scale < 1) scale = 1;
     int rowBytes = W / 8;
-    for (int row = 0; row < 16; row++) {
-        int py = y + row;
-        if (py < 0 || py >= H) continue;
-        uint8_t bits = g[row];
-        for (int col = 0; col < 8; col++) {
-            if (!(bits & (0x80 >> col))) continue;
-            int px = x + col;
-            if (px < 0 || px >= W) continue;
-            imgBuf[py * rowBytes + px / 8] &= ~(0x80 >> (px % 8));
-        }
-    }
-}
-
-// Draw a single 5x7 ASCII glyph, top-left aligned at (x,y), scaled by `scale`.
-static void drawAsciiChar(char c, int x, int y, int scale) {
-    const uint8_t *g = getGlyph(c);
-    int rowBytes = W / 8;
-    for (int col = 0; col < 5; col++) {
-        for (int row = 0; row < 7; row++) {
-            if (!(g[col] & (1 << row))) continue;
+    for (int row = 0; row < ASCII18_H; row++) {
+        for (int col = 0; col < ASCII18_W; col++) {
+            if (!(g[row] & (1u << (ASCII18_W - 1 - col)))) continue;
             for (int dy = 0; dy < scale; dy++)
                 for (int dx = 0; dx < scale; dx++) {
                     int px = x + col * scale + dx;
@@ -381,15 +369,18 @@ static void drawAsciiChar(char c, int x, int y, int scale) {
     }
 }
 
-// Pure-ASCII text with NO CJK top offset — used for reminder time / pagination
-// small text where bottom-alignment within a 16px cell would push it off-row.
+// Pure-ASCII text in the ascii18 font. `y` is the cap-top row (same convention as
+// drawMixed's CJK top), so ASCII drawn here bottom-aligns with adjacent CJK text.
 static void drawAsciiText(int x, int y, const char *text, int scale) {
     if (!text) return;
     if (scale < 1) scale = 1;
     int cx = x;
     for (const char *p = text; *p; p++) {
-        drawAsciiChar(*p, cx, y, scale);
-        cx += 5 * scale + 1;                  // glyph + 1px gap
+        uint8_t c = (uint8_t)*p;
+        if (c < ASCII18_FIRST || c > ASCII18_LAST) { cx += 6 * scale; continue; }
+        const uint32_t *g = ascii18_lookup(c);
+        if (g) drawAscii18(cx, y - ASCII18_CAP * scale, g, scale);
+        cx += ascii18_width[c - ASCII18_FIRST] * scale + scale;
     }
 }
 
@@ -405,20 +396,21 @@ static void drawMissingGlyph(int x, int y) {
     }
 }
 
-// Mixed CJK + ASCII text on a 16px cell grid. ASCII now uses the mono-hinted
-// half-width 8x16 ascii16 glyphs (same TTF as CJK), so Chinese and English share
-// the same stroke weight. asciiScale is kept for signature compat but no longer
-// scales ASCII (the half-width glyph is fixed 8x16). CJK misses render as a box.
+// Mixed CJK + ASCII text. CJK is a 16px grid; ASCII uses the proportional ascii18
+// font (Inter @18px, cap-height ~14px) so English/digits look visually level with
+// the 16px Chinese instead of small. ASCII is drawn with its cap top aligned to
+// the CJK top (y - ASCII18_CAP), so both share a common visual top/baseline.
+// Stepping is cx += ascii18_width[cp] + 1 (advance already includes side bearings).
 void drawMixed(int x, int y, const char *text, int asciiScale) {
     if (!text) return;
     if (asciiScale < 1) asciiScale = 1;
     int cx = x;
     const unsigned char *p = (const unsigned char *)text;
     while (*p) {
-        if (*p < 0x80) {                                   // ASCII (half-width 8x16)
-            const uint8_t *ag = ascii16_lookup(*p);
-            if (ag) drawAscii16(cx, y, ag);
-            cx += 9;                                        // 8px glyph + 1px gap
+        if (*p < 0x80) {                                   // ASCII (ascii18 proportional)
+            const uint32_t *ag = ascii18_lookup(*p);
+            if (ag) drawAscii18(cx, y - ASCII18_CAP, ag, 1);
+            cx += ascii18_width[*p - ASCII18_FIRST] + 1;   // advance + 1px gap
             p += 1;
         } else if ((*p & 0xE0) == 0xC0 && p[1]) {          // 2-byte UTF-8
             uint32_t cp = ((uint32_t)(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
@@ -448,7 +440,7 @@ int measureMixed(const char *text, int asciiScale) {
     int cx = 0;
     const unsigned char *p = (const unsigned char *)text;
     while (*p) {
-        if (*p < 0x80) { cx += 9; p += 1; }               // half-width 8 + 1px gap
+        if (*p < 0x80) { cx += ascii18_width[*p - ASCII18_FIRST] + 1; p += 1; }   // ascii18 advance + 1px gap
         else if ((*p & 0xE0) == 0xC0 && p[1]) { cx += 17; p += 2; }
         else if ((*p & 0xF0) == 0xE0 && p[1] && p[2]) { cx += 17; p += 3; }
         else { p += 1; }
@@ -497,17 +489,15 @@ void updateTimeDisplay() {
 void showModePreview(const char *modeName) {
     memset(imgBuf, 0xFF, IMG_BUF_LEN);
 
-    int nameScale = (H < 200) ? 2 : 3;
-    int loadScale = (H < 200) ? 1 : 2;
+    int nameScale = (H < 200) ? 1 : 2;
+    int loadScale = 1;
 
-    int len = strlen(modeName);
-    int nameX = (W - textWidth(len, nameScale)) / 2;
+    int nameX = (W - asciiTextWidth(modeName, nameScale)) / 2;
     int nameY = H / 2 - (H < 200 ? 15 : 30);
     drawText(modeName, nameX, nameY, nameScale);
 
     const char *loading = "loading...";
-    int loadLen = strlen(loading);
-    int loadX = (W - textWidth(loadLen, loadScale)) / 2;
+    int loadX = (W - asciiTextWidth(loading, loadScale)) / 2;
     int loadY = H / 2 + (H < 200 ? 10 : 20);
     drawText(loading, loadX, loadY, loadScale);
 
@@ -600,14 +590,14 @@ static void drawStatusBar(int batteryPct, bool wifiConnected) {
     time_t now = time(nullptr);
     struct tm ti; localtime_r(&now, &ti);
     int lineY = (UI_SB_H - 16) / 2;            // vertically center the 16px line
-    // Clock as plain half-width ASCII "HH:MM" (same size as body text)
+    // Clock as plain proportional ASCII "HH:MM" (same size as body text)
     char hhmm[6];
     snprintf(hhmm, sizeof(hhmm), "%02d:%02d", ti.tm_hour, ti.tm_min);
     int cx = 4;
     for (char *p = hhmm; *p; p++) {
-        const uint8_t *g = ascii16_lookup((uint8_t)*p);
-        if (g) drawAscii16(cx, lineY, g);
-        cx += 9;
+        const uint32_t *g = ascii18_lookup((uint8_t)*p);
+        if (g) drawAscii18(cx, lineY - ASCII18_CAP, g, 1);
+        cx += ascii18_width[(uint8_t)*p - ASCII18_FIRST] + 1;
     }
     // date: 月/日 星期X (right of the clock, same baseline; 16px CJK + 8px ASCII)
     char date[32];
@@ -649,7 +639,8 @@ static void drawTodoList(const TodoItem *items, int count) {
         // reminder time (right aligned, pure ASCII, no CJK top offset)
         if (items[i].remind) {
             int rw = measureMixed(items[i].remind, 1);
-            drawAsciiText(W - 6 - rw - 1, rowTop + (UI_ROW_H - 7) / 2, items[i].remind, 1);
+            // cap-top aligned with the body text (same y as drawMixed above)
+            drawAsciiText(W - 6 - rw - 1, rowTop + (UI_ROW_H - 16) / 2, items[i].remind, 1);
         }
         // dashed divider between rows
         if (i < count - 1)
@@ -680,7 +671,7 @@ void renderTodoScreen(const TodoItem *items, int count, int page, int totalPages
     char pg[16];
     snprintf(pg, sizeof(pg), "%d / %d", page + 1, totalPages);
     int pgw = measureMixed(pg, 1);
-    drawAsciiText(W - 6 - pgw - 1, H - UI_FT_H - 14, pg, 1);
+    drawAsciiText(W - 6 - pgw - 1, H - UI_FT_H - 24, pg, 1);
     if (autoDisplay) smartDisplay(imgBuf);
 }
 
@@ -717,16 +708,16 @@ void renderSettingsScreen(int cursor, int detail, int batteryPct, bool wifiConne
     // detail box for read-only info items (MAC address / current WiFi name)
     if (detail == 1 || detail == 2) {
         int dy = top + 3 * UI_ROW_H + 8;       // sits below the list, above the hint
-        outlineRect(8, dy, W - 16, 52);
+        outlineRect(8, dy, W - 16, 58);        // taller: ascii18 value line is 20px
         const char *label = (detail == 1) ? "本机 MAC 地址" : "当前 WiFi 名称";
         String val = (detail == 1) ? WiFi.macAddress()
                                     : (WiFi.SSID().length() ? WiFi.SSID() : "未连接");
-        drawMixed(16, dy + 10, label, 1);
+        drawMixed(16, dy + 8, label, 1);
         drawMixed(16, dy + 32, val.c_str(), 1);
     }
 
-    // key hint (just above the footer)
-    drawMixed(8, H - UI_FT_H - 16, "BOOT:下一项  KEY:确认 / 长按进出", 1);
+    // key hint (just above the footer; raised so the 20px ascii doesn't reach the footer rule)
+    drawMixed(8, H - UI_FT_H - 28, "BOOT:下一项  KEY:确认 / 长按进出", 1);
 
     // footer rule + settings-specific label
     int fy = H - UI_FT_H;
