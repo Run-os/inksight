@@ -28,4 +28,11 @@ void smartDisplay(const uint8_t *image);
 // Show mode name preview screen (displayed briefly on double-click before loading)
 void showModePreview(const char *modeName);
 
+// Draw mixed CJK + ASCII text. 16x16 CJK cell; ASCII is scaled (default 2 -> 10x14)
+// and bottom-aligned within the cell. Falls back to a hollow box for missing CJK.
+void drawMixed(int x, int y, const char *text, int asciiScale = 2);
+
+// Pixel width of text drawn by drawMixed (must use the same asciiScale).
+int measureMixed(const char *text, int asciiScale = 2);
+
 #endif // INKSIGHT_DISPLAY_H
