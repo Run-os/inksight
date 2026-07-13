@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-render_preview.py — InkSight 待办列表 UI 预览生成器（验证用，非设备代码）
+render_preview.py — InkSight 待办列表 UI 预览生成器（验证用，与固件同构）
 
-它复刻 firmware/src/display.cpp 的取位规则：
-  - CJK: 16x16 点阵，bit15=最左列，黑=1  -> 调 drawGlyph16 等价逻辑
-  - ASCII: 5x7 列优先点阵（bit0=顶行），可 scale 缩放
-并解析 firmware/src/cjk16.h 的真实点阵数据，渲染一张 400x300 的
-「黑白墨水长屏」待办列表页，用于目视验收「待办原生渲染 + 中英混排」。
-
-不依赖任何设备编译工具链，只需 Pillow。
+复刻 firmware/src/display.cpp 的取位与布局规则：
+  - CJK 16x16 点阵（bit15=左, 黑=1）+ ASCII 5x7 列优先点阵 -> drawMixed
+  - 7 段数码管时间（全局最大字号）
+  - 三层固定结构：状态栏 / 待办列表 / 底栏
+解析 firmware/src/cjk16.h 的真实点阵，输出 preview_todo.png，
+并打印一张字符缩略图（供无图模型自检布局）。
 """
 import os, re, sys
 from PIL import Image
@@ -20,7 +19,10 @@ H_PATH = os.path.join(HERE, "..", "src", "cjk16.h")
 W, H = 400, 300
 WHITE, BLACK = 255, 0
 
-# ── 5x7 ASCII 字体（与 display.cpp::getGlyph 完全一致）─────────
+# 与 firmware/src/display.cpp 一致的布局常量
+UI_SB_H, UI_FT_H, UI_ROW_H, UI_PER_PAGE = 52, 18, 30, 7
+
+# ── 5x7 ASCII 字体（与 display.cpp::getGlyph 一致）─────────
 FONT5x7 = {
     'A':[0x7E,0x11,0x11,0x11,0x7E], 'B':[0x7F,0x49,0x49,0x49,0x36],
     'C':[0x3E,0x41,0x41,0x41,0x22], 'D':[0x7F,0x41,0x41,0x22,0x1C],
@@ -55,7 +57,7 @@ FONT5x7 = {
     '!':[0x00,0x00,0x5F,0x00,0x00], ' ':[0x00,0x00,0x00,0x00,0x00],
 }
 
-# ── 解析 cjk16.h 的真实点阵 ─────────────────────────────────
+# ── 解析 cjk16.h 真实点阵 ─────────────────────────────────
 def load_cjk():
     txt = open(H_PATH, encoding="utf-8").read()
     def block(name):
@@ -70,13 +72,34 @@ def load_cjk():
         vals = [int(h, 16) for h in re.findall(r"0x([0-9A-Fa-f]+)", gm.group(1))]
         if len(vals) == 16:
             glyphs.append(vals)
-    assert len(cps) == len(glyphs), "codepoint/glyph count mismatch %d/%d" % (len(cps), len(glyphs))
+    assert len(cps) == len(glyphs), "count mismatch %d/%d" % (len(cps), len(glyphs))
     return dict(zip(cps, glyphs))
 
+def load_ascii16():
+    """解析 cjk16.h 的 ascii16_glyphs（8x16 半角，每字节一行，bit7=左）。"""
+    # 去掉行注释避免注释里的 } 干扰括号匹配
+    txt = re.sub(r"//[^\n]*", "", open(H_PATH, encoding="utf-8").read())
+    first = int(re.search(r"#define\s+ASCII16_FIRST\s+(0x[0-9A-Fa-f]+)", txt).group(1), 16)
+    m = re.search(r"ascii16_glyphs(?:\[[^\]]*\])*\s*=\s*\{(.*?)\n\};", txt, re.S)
+    if not m:
+        raise RuntimeError("cannot find ascii16_glyphs[] in cjk16.h")
+    glyphs = {}
+    cp = first
+    for gm in re.finditer(r"\{([0-9A-Fa-fxX,\s]+)\}", m.group(1)):
+        vals = [int(h, 16) for h in re.findall(r"0x([0-9A-Fa-f]+)", gm.group(1))]
+        if len(vals) == 16:
+            glyphs[cp] = vals
+            cp += 1
+    return glyphs
+
 CJK = load_cjk()
+ASCII16 = load_ascii16()
 
 def cjk_lookup(cp):
     return CJK.get(cp)
+
+def ascii16_lookup(cp):
+    return ASCII16.get(cp)
 
 # ── 像素原语 ────────────────────────────────────────────────
 def px_set(px, x, y):
@@ -94,29 +117,13 @@ def outline_rect(px, x, y, w, h):
     for yy in range(y, y + h):
         px_set(px, x, yy); px_set(px, x + w - 1, yy)
 
-def hline(px, x0, x1, y):
-    for xx in range(x0, x1):
-        px_set(px, xx, y)
-
-def vline(px, x, y0, y1):
-    for yy in range(y0, y1):
-        px_set(px, x, yy)
-
-def dashed_hline(px, x0, x1, y, dash=2, gap=2):
-    on = True
-    xx = x0
-    while xx < x1:
-        if on:
-            for k in range(dash):
-                if xx + k < x1:
-                    px_set(px, xx + k, y)
-        xx += dash + gap
-        on = not on
+def seg_fill(px, x, y, sw, sh):
+    fill_rect(px, x, y, sw, sh)
 
 # ── 文本渲染（与 drawMixed 同构）────────────────────────────
 def render_cjk_glyph(px, cp, x, y):
     g = cjk_lookup(cp)
-    if not g:                      # 缺字 -> 空心方框
+    if not g:
         outline_rect(px, x, y, 16, 16)
         return
     for r in range(16):
@@ -134,7 +141,19 @@ def render_ascii_char(px, ch, x, y, scale):
                     for dx in range(scale):
                         px_set(px, x + col * scale + dx, y + row * scale + dy)
 
+def render_ascii16(px, cp, x, y):
+    """8x16 半角 ASCII（同构固件 drawAscii16）：每字节一行，bit7=最左列。"""
+    g = ascii16_lookup(cp)
+    if not g:
+        return
+    for row in range(16):
+        bits = g[row]
+        for col in range(8):
+            if bits & (0x80 >> col):
+                px_set(px, x + col, y + row)
+
 def render_mixed(px, text, x, y, ascii_scale=2):
+    """中英混排：中文 16x16，ASCII 走 8x16 半角字库（与中文同基线、advance 9）。"""
     if ascii_scale < 1:
         ascii_scale = 1
     cx = x
@@ -143,11 +162,8 @@ def render_mixed(px, text, x, y, ascii_scale=2):
     while i < len(p):
         b = p[i]
         if b < 0x80:
-            top = 16 - 7 * ascii_scale
-            if top < 0:
-                top = 0
-            render_ascii_char(px, chr(b), cx, y + top, ascii_scale)
-            cx += 5 * ascii_scale + 1
+            render_ascii16(px, b, cx, y)
+            cx += 9
             i += 1
         elif (b & 0xE0) == 0xC0 and i + 1 < len(p):
             cp = ((b & 0x1F) << 6) | (p[i + 1] & 0x3F)
@@ -163,6 +179,13 @@ def render_mixed(px, text, x, y, ascii_scale=2):
             i += 1
     return cx
 
+def render_ascii_text(px, text, x, y, scale=1):
+    """纯 ASCII 文本（无 CJK 顶部偏移），用于提醒时间 / 分页等小字。"""
+    cx = x
+    for ch in text:
+        render_ascii_char(px, ch, cx, y, scale)
+        cx += 5 * scale + 1
+
 def measure_mixed(text, ascii_scale=2):
     if ascii_scale < 1:
         ascii_scale = 1
@@ -172,7 +195,7 @@ def measure_mixed(text, ascii_scale=2):
     while i < len(p):
         b = p[i]
         if b < 0x80:
-            cx += 5 * ascii_scale + 1
+            cx += 9
             i += 1
         elif (b & 0xE0) == 0xC0 and i + 1 < len(p):
             cx += 17
@@ -184,89 +207,144 @@ def measure_mixed(text, ascii_scale=2):
             i += 1
     return cx - 1 if cx > 0 else 0
 
-# ── 像素图标 ────────────────────────────────────────────────
+# ── 7-seg 数码管（与固件 draw7Seg* 同构）────────────────────
+SEG_MASK = [0x3F,0x06,0x5B,0x4F,0x66,0x6D,0x7D,0x07,0x7F,0x6F]
+
+def draw_7seg_digit(px, x, y, dw, dh, t, digit):
+    m = SEG_MASK[digit & 0x0F]
+    if m & 0x01: seg_fill(px, x+t, y, dw-2*t, t)
+    if m & 0x40: seg_fill(px, x+t, y+dh//2-t//2, dw-2*t, t)
+    if m & 0x08: seg_fill(px, x+t, y+dh-t, dw-2*t, t)
+    if m & 0x20: seg_fill(px, x, y+t, t, dh//2-t)
+    if m & 0x02: seg_fill(px, x+dw-t, y+t, t, dh//2-t)
+    if m & 0x10: seg_fill(px, x, y+dh//2, t, dh//2-t)
+    if m & 0x04: seg_fill(px, x+dw-t, y+dh//2, t, dh//2-t)
+
+def draw_7seg_colon(px, x, y, dh, t):
+    seg_fill(px, x, y+dh//3 - t//2, t, t)
+    seg_fill(px, x, y+2*dh//3 - t//2, t, t)
+
+def draw_7seg_text(px, x, y, dw, dh, t, s):
+    cx = x
+    for ch in s:
+        if '0' <= ch <= '9':
+            draw_7seg_digit(px, cx, y, dw, dh, t, int(ch))
+            cx += dw + 2
+        elif ch == ':':
+            draw_7seg_colon(px, cx, y, dh, t)
+            cx += t + 6
+        else:
+            cx += dw + 2
+
+# ── 图标（与固件同构）───────────────────────────────────────
 def draw_clipboard(px, x, y):
-    outline_rect(px, x + 2, y + 3, 12, 13)        # 板身
-    fill_rect(px, x + 4, y, 8, 4)                  # 顶部夹
-    hline(px, x + 2, x + 14, y + 6)               # 板内横线
+    outline_rect(px, x+2, y+3, 13, 14)
+    seg_fill(px, x+4, y, 9, 4)
+    for xx in range(x+2, x+15):
+        px_set(px, xx, y+6)
 
-def draw_battery(px, x, y):
-    outline_rect(px, x, y + 2, 20, 11)            # 外壳
-    fill_rect(px, x + 20, y + 5, 2, 5)            # 正极凸起
-    fill_rect(px, x + 2, y + 4, 12, 7)           # 电量 ~70%
+def draw_battery(px, x, y, pct):
+    outline_rect(px, x, y+2, 22, 12)
+    seg_fill(px, x+22, y+5, 2, 6)
+    fillw = (pct * 18) // 100
+    if fillw > 18: fillw = 18
+    if fillw < 2: fillw = 2
+    seg_fill(px, x+2, y+4, fillw, 8)
 
-def draw_checkbox(px, x, y, checked=False):
-    outline_rect(px, x, y, 13, 13)
+def draw_checkbox(px, x, y, checked):
+    outline_rect(px, x, y, 14, 14)
     if checked:
-        # 对勾
-        for k in range(4):
-            px_set(px, x + 2 + k, y + 8 - k)
-        for k in range(5):
-            px_set(px, x + 5 + k, y + 6 - k)
+        pts = [(3,9),(4,10),(5,11),(6,10),(7,9),(8,8),(9,7),(10,6),(11,5),(5,7),(6,7),(7,7),(8,7)]
+        for (dx, dy) in pts:
+            px_set(px, x+dx, y+dy)
 
-def draw_minilist(px, x, y):
-    for k in range(3):
-        outline_rect(px, x, y + k * 5, 4, 4)
-        hline(px, x + 6, x + 14, y + k * 5 + 2)
+def draw_mini_list(px, x, y):
+    for r in range(3):
+        outline_rect(px, x, y+r*6, 4, 4)
+        for xx in range(x+6, x+14):
+            px_set(px, xx, y+r*6+2)
 
-# ── 整页渲染 ────────────────────────────────────────────────
-def render_page(out_path):
-    img = Image.new("L", (W, H), WHITE)
-    px = img.load()
+def draw_status_bar(px, hhmm, date, battery_pct):
+    draw_clipboard(px, 4, 6)
+    line_y = (UI_SB_H - 16) // 2                     # 垂直居中 16px 行
+    cx = 26
+    for ch in hhmm:
+        render_ascii16(px, ord(ch), cx, line_y)      # 普通半角数字 HH:MM（同正文大小）
+        cx += 9
+    render_mixed(px, date, cx + 6, line_y, 1)        # 日期：MM/DD 星期X（同基线）
+    draw_battery(px, W-26, 9, battery_pct)
+    for xx in range(W):
+        px_set(px, xx, UI_SB_H)                      # 状态栏底线
 
-    # 顶部状态栏 (0..44)
-    draw_clipboard(px, 6, 8)
-    # 时间（放大 ASCII 占位；正式固件用 7 段数码管字库）
-    render_mixed_time(px, "21:47", 26, 5, scale=5)
-    # 日期 "07/13 星期一"
-    render_mixed(px, "07/13 星期一", 175, 14, ascii_scale=2)
-    draw_battery(px, W - 26, 9)
-    hline(px, 0, W, 46)                            # 状态栏底线
-
-    # 中间待办区
-    todos = [
-        ("买菜：牛奶 milk 和鸡蛋", "09:30"),
-        ("14:00 项目评审会议 review", "14:00"),
-        ("给妈妈打电话 call mom", "16:00"),
-        ("Git 提交 firmware 代码", "18:00"),
-        ("阅读《三体》第 3 章", "20:00"),
-        ("健身 run 30 分钟", "21:00"),
-    ]
-    top = 54
-    row_h = 26
-    for idx, (text, remind) in enumerate(todos):
-        y = top + idx * row_h
-        draw_checkbox(px, 6, y + 2, checked=(idx == 1))   # 第 2 条演示已完成
-        # 正文（中英混排，必要时截断避免溢出）
-        max_w = W - 6 - 60 - 22
-        t = text
+def draw_todo_list(px, items):
+    y0 = UI_SB_H + 4
+    for i, it in enumerate(items):
+        row_top = y0 + i * UI_ROW_H
+        draw_checkbox(px, 8, row_top + (UI_ROW_H - 14) // 2, it["done"])
+        # body（中英混排，截断避免与提醒时间重叠）
+        max_w = W - 30 - 58 - 6
+        t = it["text"]
         while measure_mixed(t, 2) > max_w and len(t) > 1:
             t = t[:-1]
-        render_mixed(px, t, 24, y, ascii_scale=2)
-        # 右侧提醒时间（ASCII 小字）
-        render_mixed(px, remind, W - 6 - measure_mixed(remind, 1) - 1, y + 4, ascii_scale=1)
-        if idx < len(todos) - 1:
-            dashed_hline(px, 6, W - 6, y + row_h - 4)
-    # 分页提示（右下角小字）
-    page = "1 / 3"
-    render_mixed(px, page, W - 6 - measure_mixed(page, 1) - 1, top + len(todos) * row_h - 2, ascii_scale=1)
+        render_mixed(px, t, 30, row_top + (UI_ROW_H - 16) // 2, 2)
+        # reminder time（纯 ASCII 右对齐，居中到行，无 CJK 顶部偏移）
+        if it.get("remind"):
+            rw = measure_mixed(it["remind"], 1)
+            yy = row_top + (UI_ROW_H - 7) // 2
+            render_ascii_text(px, it["remind"], W - 6 - rw - 1, yy, 1)
+        # 虚线分隔
+        if i < len(items) - 1:
+            for xx in range(8, W - 6, 4):
+                px_set(px, xx, row_top + UI_ROW_H - 5)
 
-    # 底部底栏
-    hline(px, 0, W, H - 18)
-    draw_minilist(px, 6, H - 15)
-    render_mixed(px, "待办", 14, H - 16, ascii_scale=1)
-    render_mixed(px, "— 诸事有序", W - 6 - measure_mixed("— 诸事有序", 1) - 1, H - 16, ascii_scale=1)
+def draw_footer(px):
+    fy = H - UI_FT_H
+    for xx in range(W):
+        px_set(px, xx, fy)
+    draw_mini_list(px, 8, H - 15)
+    render_mixed(px, "待办", 16, H - 16, 1)
+    render_mixed(px, "— 诸事有序", W - 6 - measure_mixed("— 诸事有序", 1) - 1, H - 16, 1)
 
+def render_page(out_path, items, hhmm="21:47", date="07/13 星期一", battery_pct=87, page=0, total=3):
+    img = Image.new("L", (W, H), WHITE)
+    px = img.load()
+    draw_status_bar(px, hhmm, date, battery_pct)
+    draw_todo_list(px, items)
+    draw_footer(px)
+    pg = "%d / %d" % (page + 1, total)
+    pgx = W - 6 - measure_mixed(pg, 1) - 1
+    pgy = H - UI_FT_H - 14
+    render_ascii_text(px, pg, pgx, pgy, 1)
     img.save(out_path)
-    print("saved", out_path, img.size)
+    return img
 
-def render_mixed_time(px, text, x, y, scale=5):
-    """纯 ASCII 时间占位（数码管字库待固件实现）。"""
-    cx = x
-    for ch in text:
-        render_ascii_char(px, ch, cx, y, scale)
-        cx += 5 * scale + 2
+def dump_ascii(img, block=6):
+    w, h = img.size
+    px = img.load()
+    lines = []
+    for y in range(0, h, block):
+        line = ""
+        for x in range(0, w, block):
+            black = 0; tot = 0
+            for yy in range(y, min(y+block, h)):
+                for xx in range(x, min(x+block, w)):
+                    tot += 1
+                    if px[xx, yy] == BLACK:
+                        black += 1
+            line += '#' if black*3 >= tot else ' '
+        lines.append(line)
+    return "\n".join(lines)
 
 if __name__ == "__main__":
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "preview_todo.png")
-    render_page(out)
+    todos = [
+        {"text":"买菜：牛奶 milk 和鸡蛋", "done":False, "remind":"09:30"},
+        {"text":"14:00 项目评审会议 review", "done":True,  "remind":"14:00"},
+        {"text":"给妈妈打电话 call mom", "done":False, "remind":"16:00"},
+        {"text":"Git 提交 firmware 代码", "done":False, "remind":"18:00"},
+        {"text":"阅读《三体》第 3 章", "done":True,  "remind":"20:00"},
+        {"text":"健身 run 30 分钟", "done":False, "remind":"21:00"},
+    ]
+    img = render_page(out, todos)
+    print("saved", out, img.size)
+    print(dump_ascii(img))

@@ -64,6 +64,11 @@ struct DeviceContext {
 
 static DeviceContext ctx;
 
+// App view: device boots into the todo list; the KEY button switches to the
+// image viewer (and cycles images). Used by the v2 backend integration.
+enum class AppView : uint8_t { TODO, IMAGE };
+static AppView g_view = AppView::TODO;
+
 // ── Activity flags (focus listening / always active) ────────
 static bool focusListening = false;
 static bool alwaysActive = false;
@@ -526,8 +531,19 @@ static void checkConfigButton() {
             if (pressDuration >= (unsigned long)SHORT_PRESS_MIN_MS &&
                 pressDuration < (unsigned long)CFG_BTN_HOLD_MS) {
                 if (ctx.state != DeviceState::PORTAL) {
-                    Serial.printf("[BTN] Short press %lums -> next page\n", pressDuration);
+                    Serial.printf("[BTN] Short press %lums\n", pressDuration);
+#if INKSIGHT_BACKEND_V2
+                    if (g_view == AppView::TODO) {
+                        Serial.println("[BTN] TODO -> IMAGE view");
+                        g_view = AppView::IMAGE;
+                        triggerImmediateRefresh(false);  // fetch first image
+                    } else {
+                        Serial.println("[BTN] IMAGE -> next image");
+                        triggerImmediateRefresh(true);   // next image
+                    }
+#else
                     triggerImmediateRefresh(true);
+#endif
                     ctx.ignoreConfigButtonUntilRelease = true;  // debounce until released
                 }
             }
@@ -559,6 +575,23 @@ void setup() {
 
     // 1) Show the initialization / boot screen FIRST (before any network work).
     showBootScreen();
+
+    // 1b) Native todo-list UI demo (UI chrome validation; replaced by
+    //     fetchTodos() once the inksight-content backend is wired up).
+#ifdef INKSIGHT_TODO_DEMO
+    {
+        TodoItem demo[] = {
+            {"买菜：牛奶 milk 和鸡蛋", false, "09:30"},
+            {"14:00 项目评审会议 review", true, "14:00"},
+            {"给妈妈打电话 call mom", false, "16:00"},
+            {"Git 提交 firmware 代码", false, "18:00"},
+            {"阅读《三体》第 3 章", false, "20:00"},
+            {"健身 run 30 分钟", false, "21:00"},
+        };
+        renderTodoScreen(demo, 6, 0, 3, 87);
+        delay(2500);
+    }
+#endif
 
     loadConfig();
 
@@ -606,65 +639,35 @@ void setup() {
         return;
     }
 
-    Serial.println("Fetching image...");
+    // ── Default view: todo list pulled from inksight-server ──
+    Serial.println("Fetching todos...");
     ledFeedback("downloading");
-    bool gotFallback = false;
-    String renderedModeId;
-    bool ok = fetchBMP(false, &gotFallback, &renderedModeId);
-    if (g_userAborted) {
-        Serial.println("User aborted during fetch -> portal");
-        enterPortalMode();
-        return;
-    }
-    if (!ok || gotFallback) {
-        if (!waitForContentReady()) {
-            ledFeedback("fail");
-            handleFailure("Server error");
-            return;
+    {
+        TodoItem todoItems[TODO_MAX];
+        int todoCount = 0;
+        if (fetchTodos(todoItems, todoCount, TODO_MAX) && todoCount > 0) {
+            float vb = readBatteryVoltage();
+            int pct = (int)((vb - 3.0f) / (4.2f - 3.0f) * 100.0f);
+            if (pct < 0) pct = 0; else if (pct > 100) pct = 100;
+            renderTodoScreen(todoItems, todoCount, 0, 1, pct);
+            cacheSave(imgBuf, IMG_BUF_LEN);
+            lastContentChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
+            Serial.printf("Todos rendered: %d items\n", todoCount);
+        } else {
+            Serial.println("Todo fetch failed; keeping demo list on screen");
         }
     }
-
-    resetRetryCount();
-
-    cacheSave(imgBuf, IMG_BUF_LEN);
-    lastContentChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
-    Serial.println("Displaying image...");
-    smartDisplay(imgBuf);
     ledFeedback("success");
-    syncNTP();   // moved after first paint so the screen lights ~5s sooner
+    syncNTP();   // after first paint so the screen lights sooner
     Serial.println("Display done");
     lastRenderedPeriod = currentPeriodIndex();
     ctx.lastClockTick = millis();
 
-    if (renderedModeId.length() > 0) {
-        ctx.currentRenderedModeId = renderedModeId;
-    }
-
-    // 2) Decide online mode for the always-on device.
-    bool firstInstallLivePending = isFirstInstallLiveModePending();
-    if (alwaysActive) {
-        ctx.liveMode = true;
-        clearTemporaryOnlineWindow();
-        ctx.lastLivePollAt = 0;
-        ctx.lastLiveWiFiRetryAt = 0;
-        if (firstInstallLivePending) markFirstInstallLiveModeDone();
-        postRuntimeMode("active");
-        Serial.println("[LIVE] Always active config enabled");
-    } else if (firstInstallLivePending) {
-        markFirstInstallLiveModeDone();
-        extendTemporaryOnlineWindow("first install");
-        postRuntimeMode("active");
-    } else {
-        clearTemporaryOnlineWindow();
-        postRuntimeMode("interval");
-        Serial.println("[LIVE] Interval mode: WiFi will disconnect until next refresh");
-        WiFi.disconnect(true);
-        WiFi.mode(WIFI_OFF);
-    }
-
+    // ── Always-on: keep WiFi up so button image fetch / todo refresh work ──
+    g_view = AppView::TODO;
     ctx.state = DeviceState::DISPLAYING;
     ctx.setupDoneAt = millis();
-    Serial.println("Boot complete, entering main loop (always on)");
+    Serial.println("Boot complete (inksight-server mode), entering main loop (always on)");
 }
 
 // ── loop() ──────────────────────────────────────────────────
@@ -702,7 +705,27 @@ void loop() {
 #else
         Serial.printf("%d min elapsed, refreshing content...\n", cfgSleepMin);
 #endif
+#if INKSIGHT_BACKEND_V2
+        if (g_view == AppView::TODO) {
+            TodoItem todoItems[TODO_MAX];
+            int todoCount = 0;
+            if (fetchTodos(todoItems, todoCount, TODO_MAX) && todoCount > 0) {
+                float vb = readBatteryVoltage();
+                int pct = (int)((vb - 3.0f) / (4.2f - 3.0f) * 100.0f);
+                if (pct < 0) pct = 0; else if (pct > 100) pct = 100;
+                renderTodoScreen(todoItems, todoCount, 0, 1, pct);
+                uint32_t cs = computeChecksum(imgBuf, IMG_BUF_LEN);
+                if (cs != lastContentChecksum) {
+                    smartDisplay(imgBuf);
+                    lastContentChecksum = cs;
+                }
+            }
+        } else {
+            triggerImmediateRefresh();
+        }
+#else
         triggerImmediateRefresh();
+#endif
         ctx.setupDoneAt = millis();
     }
 

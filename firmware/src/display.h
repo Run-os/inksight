@@ -35,4 +35,14 @@ void drawMixed(int x, int y, const char *text, int asciiScale = 2);
 // Pixel width of text drawn by drawMixed (must use the same asciiScale).
 int measureMixed(const char *text, int asciiScale = 2);
 
+// Native todo item — body text is rendered on-device via drawMixed.
+struct TodoItem {
+    const char *text;    // body text (UTF-8, CJK + ASCII mixed)
+    bool done;           // checked state
+    const char *remind;  // reminder time, ASCII like "14:00"; NULL = none
+};
+
+// Render the full native todo screen: status bar + todo rows + footer.
+void renderTodoScreen(const TodoItem *items, int count, int page, int totalPages, int batteryPct);
+
 #endif // INKSIGHT_DISPLAY_H

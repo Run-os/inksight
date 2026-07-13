@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>InkSight Server</title>
+<style>
+  :root { --ink:#111; --paper:#f4f1ea; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font-family: "Courier New", ui-monospace, Menlo, Consolas, monospace;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 40px 20px 64px; }
+  header { border: 3px solid var(--ink); padding: 18px 20px; display: flex; align-items: center; gap: 14px; }
+  .logo {
+    width: 28px; height: 28px; border: 3px solid var(--ink); border-radius: 4px;
+    position: relative; flex: 0 0 auto;
+  }
+  .logo::before { content:""; position:absolute; left:5px; top:5px; width:8px; height:3px; background:var(--ink); box-shadow:0 6px 0 var(--ink), 0 12px 0 var(--ink); }
+  h1 { font-size: 22px; margin: 0; letter-spacing: 1px; }
+  .tag { font-size: 12px; opacity: .7; margin-top: 2px; }
+  section { border: 3px solid var(--ink); border-top: none; padding: 18px 20px; }
+  h2 { font-size: 14px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: 1px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { padding: 8px 0; border-bottom: 1px dashed rgba(17,17,17,.35); }
+  li:last-child { border-bottom: none; }
+  code { background: rgba(17,17,17,.08); padding: 1px 6px; border-radius: 3px; }
+  .btn {
+    display: inline-block; margin-top: 12px; padding: 10px 16px; border: 3px solid var(--ink);
+    background: var(--ink); color: var(--paper); text-decoration: none; font-weight: bold;
+  }
+  .btn:hover { background: var(--paper); color: var(--ink); }
+  .muted { font-size: 12px; opacity: .65; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="logo"></div>
+      <div>
+        <h1>INKSIGHT</h1>
+        <div class="tag">— 诸事有序 · 设备后端服务</div>
+      </div>
+    </header>
+
+    <section>
+      <h2>设备接口</h2>
+      <ul>
+        <li><code>GET /api/todos</code> — 待办列表（默认显示页，对接滴答清单）</li>
+        <li><code>GET /api/images/manifest</code> — 图片清单（按目录顺序）</li>
+        <li><code>GET /api/images/{name}</code> — 单张图片二进制</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>管理 / 授权</h2>
+      <ul>
+        <li><code>GET /admin/dida365/auth</code> — 开始滴答清单 OAuth 授权</li>
+        <li><code>GET /health</code> — 健康检查</li>
+      </ul>
+      <a class="btn" href="/admin/dida365/auth">▶ 连接滴答清单</a>
+      <p class="muted">首次部署需在此完成授权，后端会把令牌保存到 .dida_tokens.json。</p>
+    </section>
+
+    <section>
+      <h2>说明</h2>
+      <p class="muted">
+        设备开机默认进入待办页，通过物理按键切换到图片页。配置项见站点根目录 <code>.env</code>。
+        图片资源放置于 <code>images/</code> 目录，由配套生成脚本产出。
+      </p>
+    </section>
+  </div>
+</body>
+</html>

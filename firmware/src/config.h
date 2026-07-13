@@ -41,7 +41,20 @@ extern uint8_t imgBuf[];
 static const int FULL_REFRESH_INTERVAL = 10;  // RLCD ignores: every refresh is an equal full repaint
 
 // ── Config defaults ─────────────────────────────────────────
-static const char *DEFAULT_SERVER  = "";  // Must be set via captive portal
+// Default backend host. The old inksight backend is retired; the device now
+// talks to inksight-server (FastAPI) hosted at this domain.
+static const char *DEFAULT_SERVER  = "https://esp32.122050.xyz";
+// Skip TLS certificate validation for the backend domain. The server sits
+// behind a reverse proxy (e.g. Caddy/Let's Encrypt) whose root CA won't match
+// the hardcoded ROOT_CA. Set to 0 and update certs.h ROOT_CA for strict TLS.
+#define BACKEND_TLS_INSECURE 1
+// Use inksight-server endpoints (/api/todos, /api/images/*). When set, the
+// legacy device-management endpoints (heartbeat, claim-token, runtime, state,
+// ota progress, focus-alert) are disabled and /api/render is replaced by the
+// image manifest + per-file fetch.
+#define INKSIGHT_BACKEND_V2 1
+// Max todo items pulled from /api/todos and rendered on the todo screen.
+#define TODO_MAX 24
 static const int   WIFI_TIMEOUT    = 15000;   // ms
 static const int   MAX_WIFI_NETWORKS = 5;     // Max saved WiFi credentials (tried in order on boot)
 static const int   HTTP_TIMEOUT    = 30000;   // ms
@@ -69,6 +82,12 @@ static const int   RETRY_DELAYS[] = {5, 15, 30, 60, 120};
 #if DEBUG_MODE
 static const int DEBUG_REFRESH_MIN = 1;  // 1 minute for debugging
 #endif
+
+// ── Native todo demo (UI chrome validation) ─────────────────
+// Renders a mock todo list on boot so the native UI can be verified on-device
+// before the backend (inksight-content) is wired up. Set to 0 once fetchTodos
+// is integrated.
+#define INKSIGHT_TODO_DEMO 1
 
 // ── Time display region (partial refresh area) ──────────────
 // Proportional to screen size (scales across 2.9"/4.2"/7.5")
