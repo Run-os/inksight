@@ -3,80 +3,12 @@
 
 #include <Arduino.h>
 
-#if defined(BOARD_PROFILE_ESP32_C3)
-#define PIN_EPD_MOSI   6
-#define PIN_EPD_SCK    4
-#define PIN_EPD_CS     7
-#define PIN_EPD_DC     1
-#define PIN_EPD_RST    2
-#define PIN_EPD_BUSY   10
-#define PIN_BAT_ADC    0
-#define PIN_CFG_BTN    9
-#define PIN_LED        3
-#define PIN_AI_CHAT_SW -1
-#elif defined(BOARD_PROFILE_ESP32_C3_WROOM02)
-#define PIN_EPD_MOSI   6
-#define PIN_EPD_SCK    4
-#define PIN_EPD_CS     7
-#define PIN_EPD_DC     1
-#define PIN_EPD_RST    2
-#define PIN_EPD_BUSY   10
-#define PIN_BAT_ADC    0
-#define PIN_CFG_BTN    9
-#define PIN_LED        5
-#define PIN_AI_CHAT_SW -1
-#elif defined(BOARD_PROFILE_ESP32_WROOM32E)
-#define PIN_EPD_MOSI   14
-#define PIN_EPD_SCK    13
-#define PIN_EPD_CS     15
-#define PIN_EPD_DC     27
-#define PIN_EPD_RST    26
-#define PIN_EPD_BUSY   25
-#define PIN_BAT_ADC    35
-#define PIN_CFG_BTN    0
-#define PIN_LED        2
-#define PIN_AI_CHAT_SW 23
-#define BOARD_HAS_AUDIO
-#elif defined(BOARD_PROFILE_SMT_WROOM32E)
-#define PIN_EPD_MOSI   14
-#define PIN_EPD_SCK    13
-#define PIN_EPD_CS     15
-#define PIN_EPD_DC     27
-#define PIN_EPD_RST    26
-#define PIN_EPD_BUSY   25
-#define PIN_BAT_ADC    35
-#define PIN_CFG_BTN    0
-#define PIN_LED        2
-#define PIN_AI_CHAT_SW 4
-#define BOARD_HAS_AUDIO
-#elif defined(BOARD_PROFILE_SMT_C3)
-#define PIN_EPD_MOSI   6
-#define PIN_EPD_SCK    4
-#define PIN_EPD_CS     7
-#define PIN_EPD_DC     1
-#define PIN_EPD_RST    2
-#define PIN_EPD_BUSY   10
-#define PIN_BAT_ADC    0
-#ifndef PIN_CFG_BTN
-#define PIN_CFG_BTN    9
-#endif
-#define PIN_LED        5
-#define PIN_AI_CHAT_SW -1
-#elif defined(BOARD_PROFILE_YD_ESP32_S3_N16R8)
-#define PIN_EPD_MOSI   11
-#define PIN_EPD_SCK    12
-#define PIN_EPD_CS     10
-#define PIN_EPD_DC     9
-#define PIN_EPD_RST    8
-#define PIN_EPD_BUSY   7
-#define PIN_BAT_ADC    4
-#define PIN_CFG_BTN    0
-#define PIN_LED        -1
-#define PIN_RGB_LED    48
-#define PIN_AI_CHAT_SW -1
-#elif defined(BOARD_PROFILE_RLCD_S3)
-// ESP32-S3-RLCD-4.2 — 4.2" ST7305 reflective LCD (400x300), 16MB flash / 8MB PSRAM.
+// ── Single target board: ESP32-S3-RLCD-4.2 (ST7305 reflective LCD) ──
+// 4.2" ST7305 reflective LCD (400x300), 16MB flash / 8MB PSRAM.
 // Display pins match the vendor example (MOSI=12, SCL=11, DC=5, CS=40, RST=41).
+#ifndef BOARD_PROFILE_RLCD_S3
+#error "This firmware build targets BOARD_PROFILE_RLCD_S3 only"
+#endif
 #define PIN_EPD_MOSI   12
 #define PIN_EPD_SCK    11
 #define PIN_EPD_CS     40
@@ -87,53 +19,26 @@
 #define PIN_CFG_BTN    18     // KEY button (active low, GPIO18); BOOT(GPIO0) is download-mode only
 #define PIN_LED        -1
 #define PIN_RGB_LED    48
-#define PIN_AI_CHAT_SW -1
-#else
-#error "Unsupported board profile"
-#endif
-
-#ifndef PIN_RGB_LED
-#define PIN_RGB_LED -1
-#endif
 
 // ── Display constants ────────────────────────────────────────
-// Default for 4.2" E-Paper (400x300, 1-bit).
-// Override via build flags: -D EPD_WIDTH=800 -D EPD_HEIGHT=480
-// Supported configurations:
-//   4.2"  (400x300) - default
-//   2.9"  (296x128)
-//   5.83" (648x480)
-//   7.5"  (800x480)
-#ifndef EPD_WIDTH
+// 4.2" reflective LCD is fixed at 400x300, 1-bit monochrome.
 #define EPD_WIDTH  400
-#endif
-#ifndef EPD_HEIGHT
 #define EPD_HEIGHT 300
-#endif
 
 static const int W = EPD_WIDTH;
 static const int H = EPD_HEIGHT;
 static const int ROW_BYTES   = W / 8;
 static const int ROW_STRIDE  = (ROW_BYTES + 3) & ~3;  // BMP row stride (4-byte aligned)
 static const int IMG_BUF_LEN = ROW_BYTES * H;
-/** Preprocessor image buffer size for #if (IMG_BUF_LEN is not a cpp constant). */
-#define INKSIGHT_IMG_BUF_BYTES_MACRO ((EPD_WIDTH / 8) * (EPD_HEIGHT))
 
-#ifndef EPD_BPP
+// Monochrome 1bpp only (RLCD has no color buffer).
 #define EPD_BPP 1
-#endif
-static const int COLOR_BUF_LEN = (W * H) / 4;  // 2bpp: 4 pixels per byte
 
-// Shared framebuffers (defined in main.cpp)
+// Shared framebuffer (defined in main.cpp)
 extern uint8_t imgBuf[];
-#if EPD_BPP >= 2
-extern uint8_t *colorBuf;
-extern bool useColorBuf;
-bool ensureColorBuf();
-#endif
 
 // ── Refresh strategy ─────────────────────────────────────────
-static const int FULL_REFRESH_INTERVAL = 10;  // Full refresh every N updates to clear ghosting
+static const int FULL_REFRESH_INTERVAL = 10;  // RLCD ignores: every refresh is an equal full repaint
 
 // ── Config defaults ─────────────────────────────────────────
 static const char *DEFAULT_SERVER  = "";  // Must be set via captive portal
@@ -141,10 +46,6 @@ static const int   WIFI_TIMEOUT    = 15000;   // ms
 static const int   MAX_WIFI_NETWORKS = 5;     // Max saved WiFi credentials (tried in order on boot)
 static const int   HTTP_TIMEOUT    = 30000;   // ms
 static const int   CFG_BTN_HOLD_MS = 2000;    // Long press duration to trigger config mode
-static const int   AI_CHAT_BTN_HOLD_MS = 3000; // Long press duration to enter AI chat mode
-static const int   VOCAB_ENTER_HOLD_MS = 2000; // Long press duration to enter vocab review
-static const int   VOCAB_BTN_HOLD_MS = 1500;  // Long press duration to submit vocab rating
-static const int   VOCAB_EXIT_HOLD_MS = 5000; // Long press duration to exit vocab review
 static const int   SHORT_PRESS_MIN_MS = 50;   // Minimum short press duration (debounce)
 static const int   LIVE_POLL_MS = 5000;       // Poll interval for pending remote actions
 static const int   LIVE_WIFI_RETRY_MS = 5000; // Retry interval when WiFi is disconnected
@@ -152,11 +53,9 @@ static const unsigned long TEMP_ONLINE_WINDOW_MS = 10UL * 60UL * 1000UL;
 static const unsigned long PORTAL_AUTO_TIMEOUT_MS = 3UL * 60UL * 1000UL;
 static const unsigned long PORTAL_MANUAL_TIMEOUT_MS = 10UL * 60UL * 1000UL;
 static const unsigned long HEARTBEAT_INTERVAL_MS = 10UL * 60UL * 1000UL;
-static const int   MAX_RETRY_COUNT = 5;       // Max retries before deep sleep
+static const int   MAX_RETRY_COUNT = 5;       // Max retries before falling back to cached content
 // WiFi -> captive portal fallback: when ALL saved networks fail to connect,
 // do this many quick in-place retry sweeps (no reboot) before opening the AP.
-// Keeps the portal fast to appear (user is likely waiting to reconfigure)
-// while still riding out a brief blip such as a router rebooting.
 static const int           WIFI_PORTAL_RETRY_SWEEPS   = 1;
 static const unsigned long WIFI_PORTAL_RETRY_DELAY_MS = 3000;
 // Progressive retry delays in seconds: 5s, 15s, 30s, 60s, 120s
@@ -180,12 +79,5 @@ static const int DEBUG_REFRESH_MIN = 1;  // 1 minute for debugging
 
 #define TIME_TEXT_X   (W * 1 / 100)
 #define TIME_TEXT_Y   (H * 4 / 100)
-
-#ifndef AUTO_BOOT_AI_CHAT
-#define AUTO_BOOT_AI_CHAT 0
-#endif
-#ifndef VOCAB_REVIEW_BUILD
-#define VOCAB_REVIEW_BUILD 0
-#endif
 
 #endif // INKSIGHT_CONFIG_H

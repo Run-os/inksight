@@ -5,34 +5,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-enum class VoiceWsEventType : uint8_t {
-    None = 0,
-    SessionReady,
-    AsrPartial,
-    AsrFinal,
-    LlmDelta,
-    TtsTextChunk,
-    TtsAudioChunk,
-    TurnDone,
-    TurnInterrupted,
-    Error,
-};
-
-struct VoiceWsEvent {
-    VoiceWsEventType type = VoiceWsEventType::None;
-    String text;
-    String transcript;
-    String turnId;
-    String switchToMode;
-    int generationId = 0;
-    int chunkId = 0;
-    int sampleRate = 16000;
-    bool exitConversation = false;
-    bool needsDecode = false;
-    uint8_t *data = nullptr;
-    size_t dataLen = 0;
-};
-
 extern bool g_userAborted;
 extern bool g_suppressAbortCheck;
 
@@ -59,32 +31,9 @@ bool peekPendingMode(String &pendingModeOut);
 
 // POST runtime mode (active/interval) to backend.
 bool postRuntimeMode(const char *mode);
-bool postVocabEvent(const char *action, const char *rating = nullptr);
-bool fetchVocabReviewPack(uint8_t *ratingParts, size_t partLen, int yStart, int yEnd);
-typedef void (*AudioChunkCallback)(const uint8_t *data, size_t len, void *userData);
-bool fetchVocabAudio(AudioChunkCallback onChunk, void *userData = nullptr);
 
 // POST device config JSON to backend /api/config endpoint.
 void postConfigToBackend();
-
-bool submitVoiceTurn(const char *pcmPath, int sampleRate, int screenW, int screenH, String &turnId, String &replyText, String &transcript, bool &exitConversation);
-bool submitVoiceTurnBytes(const uint8_t *pcmBytes, size_t pcmSize, int sampleRate, int screenW, int screenH, String &turnId, String &replyText, String &transcript, bool &exitConversation);
-bool fetchVoiceAudio(const String &turnId, const char *path);
-bool fetchVoiceImage(const String &turnId);
-bool fetchVoiceIntroImage(int screenW, int screenH);
-bool voiceWsOpen(int sampleRate, int screenW, int screenH, bool includeImage);
-bool voiceWsConnected();
-void voiceWsLoop();
-bool voiceWsSendAudioBin(const int16_t *samples, size_t sampleCount);
-bool voiceWsSendAudioChunk(const int16_t *samples, size_t sampleCount);
-bool voiceWsSendRawPacket(const uint8_t *data, size_t len);
-bool voiceWsCommitTurn();
-bool voiceWsInterrupt();
-bool voiceWsPollEvent(VoiceWsEvent &eventOut);
-void voiceWsReleaseEvent(VoiceWsEvent &event);
-void voiceWsClose();
-bool voiceWsBinaryAudio();
-bool voiceWsServerVad();
 
 bool ensureDeviceToken();
 bool postHeartbeat(bool force = false);

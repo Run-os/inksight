@@ -18,9 +18,6 @@ void epdDisplay(const uint8_t *image);
 // Deep clear: multi-cycle black/white flush then display image (eliminates stubborn ghosting)
 void epdDisplayDeepClear(const uint8_t *image);
 
-// Full-screen display with pre-packed 2bpp data (4-color panels)
-void epdDisplay2bpp(const uint8_t *image2bpp);
-
 // Full-screen display with fast refresh (reduced flashing)
 void epdDisplayFast(const uint8_t *image);
 
@@ -29,7 +26,6 @@ bool epdSupportsPartialRefresh();
 void epdPartialDisplay(uint8_t *data, int xStart, int yStart, int xEnd, int yEnd);
 void epdPartialDisplayWithOld(uint8_t *data, const uint8_t *oldData, int xStart, int yStart, int xEnd, int yEnd);
 
-// Put EPD into deep sleep mode
-void epdSleep();
+// No epdSleep(): RLCD is always-on (this firmware removed all display sleep mechanisms).
 
 #endif // INKSIGHT_EPD_DRIVER_H

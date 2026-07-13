@@ -18,23 +18,9 @@ void showError(const char *msg);
 // Show diagnostic screen with up to 4 lines
 void showDiagnostic(const char *line1, const char *line2, const char *line3, const char *line4);
 
-// Dedicated status screen for local AI chat flow
-void showAiChatStatus(const char *state, const char *detail);
-
-// Single-turn: small partial-refresh overlay in footer.
-// footerCenter=true puts icon centered; false puts it bottom-right.
-void showVoiceIndicator(bool footerCenter = false);
-void hideVoiceIndicator();
-
-// Multi-turn: full-screen with large centered robot icon (uses fast full refresh).
-void showVoiceChatScreen();
-
 int currentPeriodIndex();
 
 void updateTimeDisplay();
-
-// Refresh the reveal/control region from the current vocab review imgBuf.
-void updateVocabRatingRegion(const uint8_t *oldImage = nullptr);
 
 // Smart display: uses no-flash partial refresh normally, full refresh every N cycles
 void smartDisplay(const uint8_t *image);
