@@ -44,9 +44,11 @@ enum class PortalEntryReason : uint8_t {
 struct DeviceContext {
     DeviceState state = DeviceState::BOOT;
 
-    // Button state
-    unsigned long btnPressStart = 0;
-    bool ignoreConfigButtonUntilRelease = false;
+    // Button state (BOOT = GPIO0, KEY = GPIO18; PWR is a hardware power switch)
+    unsigned long bootPressStart = 0;
+    unsigned long keyPressStart = 0;
+    bool ignoreBootUntilRelease = false;
+    bool ignoreKeyUntilRelease = false;
     bool liveMode = false;
     unsigned long temporaryOnlineUntil = 0;
     unsigned long lastLivePollAt = 0;
@@ -68,8 +70,14 @@ static DeviceContext ctx;
 
 // App view: device boots into the todo list; the KEY button switches to the
 // image viewer (and cycles images). Used by the v2 backend integration.
-enum class AppView : uint8_t { TODO, IMAGE };
+enum class AppView : uint8_t { TODO, IMAGE, SETTINGS };
 static AppView g_view = AppView::TODO;
+
+// Settings menu (two-level): 一级=系统设置, 二级=重新配网 / 本机MAC地址 / 当前WiFi名称
+static const int SETTINGS_ITEM_COUNT = 3;
+static int g_settingsCursor = 0;            // 0..2, highlighted 二级 item
+static int g_settingsDetail = -1;           // -1 none; 1=MAC; 2=WiFi name (info shown)
+static AppView g_viewBeforeSettings = AppView::TODO;
 
 // Todo pagination (v2): fixed 6 rows per page; KEY short-press pages through.
 static const int TODO_PER_PAGE = 6;
@@ -234,7 +242,8 @@ static void enterPortalMode(PortalEntryReason reason) {
     ctx.liveMode = false;
     clearTemporaryOnlineWindow();
     ctx.wantRefresh = false;
-    ctx.btnPressStart = 0;
+    ctx.bootPressStart = 0;
+    ctx.keyPressStart = 0;
 
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
@@ -378,6 +387,73 @@ static void repaintTodoView() {
     g_lastPaintMinute = currentMinuteOfDay();
     // Note: we intentionally do NOT cacheSave() here (content is unchanged);
     // only the status-bar battery text differs, which is irrelevant offline.
+}
+
+// ── Settings view (two-level menu) ─────────────────────────
+static int liveBatteryPct() { return batteryPctFromVoltage(readBatteryVoltage()); }
+static bool liveWifi() { return (WiFi.status() == WL_CONNECTED); }
+
+// BOOT short click (non-settings): cycle to the next top-level page.
+// BOOT long press  (non-settings): cycle to the previous top-level page.
+// (With only TODO and IMAGE as page views these two are equivalent toggles,
+//  but the semantics are kept distinct for clarity / future pages.)
+static void nextPage() {
+    g_view = (g_view == AppView::IMAGE) ? AppView::TODO : AppView::IMAGE;
+    if (g_view == AppView::IMAGE) triggerImmediateRefresh(false);
+    else refreshTodoView(true);
+    Serial.printf("[VIEW] next -> %s\n", g_view == AppView::TODO ? "TODO" : "IMAGE");
+}
+static void prevPage() {
+    g_view = (g_view == AppView::IMAGE) ? AppView::TODO : AppView::IMAGE;
+    if (g_view == AppView::IMAGE) triggerImmediateRefresh(false);
+    else refreshTodoView(true);
+    Serial.printf("[VIEW] prev -> %s\n", g_view == AppView::TODO ? "TODO" : "IMAGE");
+}
+
+static void enterSettings() {
+    if (g_view != AppView::SETTINGS) g_viewBeforeSettings = g_view;
+    g_view = AppView::SETTINGS;
+    g_settingsCursor = 0;
+    g_settingsDetail = -1;
+    renderSettingsScreen(g_settingsCursor, g_settingsDetail, liveBatteryPct(), liveWifi());
+    lastContentChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
+    g_lastPaintMinute = currentMinuteOfDay();
+    Serial.println("[SETTINGS] entered");
+}
+static void exitSettings() {
+    g_view = g_viewBeforeSettings;
+    g_settingsDetail = -1;
+    if (g_view == AppView::IMAGE) triggerImmediateRefresh(false);
+    else refreshTodoView(true);
+    Serial.println("[SETTINGS] exited");
+}
+// BOOT short click inside settings: move cursor to the next (down) 二级 item.
+static void settingsCursorNext() {
+    g_settingsCursor = (g_settingsCursor + 1) % SETTINGS_ITEM_COUNT;
+    g_settingsDetail = -1;
+    renderSettingsScreen(g_settingsCursor, g_settingsDetail, liveBatteryPct(), liveWifi());
+    lastContentChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
+    g_lastPaintMinute = currentMinuteOfDay();
+    Serial.printf("[SETTINGS] cursor=%d\n", g_settingsCursor);
+}
+// KEY short click inside settings: confirm the highlighted item.
+static void settingsConfirm() {
+    int item = g_settingsCursor;
+    if (item == 0) {                       // 重新配网 -> captive portal
+        Serial.println("[SETTINGS] 重新配网 -> portal");
+        enterPortalMode(PortalEntryReason::MANUAL);
+        return;
+    }
+    g_settingsDetail = item;               // 1=MAC, 2=WiFi name (read-only info)
+    renderSettingsScreen(g_settingsCursor, g_settingsDetail, liveBatteryPct(), liveWifi());
+    lastContentChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
+    g_lastPaintMinute = currentMinuteOfDay();
+    Serial.printf("[SETTINGS] confirm item %d (detail)\n", item);
+}
+static void repaintSettingsView() {
+    renderSettingsScreen(g_settingsCursor, g_settingsDetail, liveBatteryPct(), liveWifi());
+    lastContentChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
+    g_lastPaintMinute = currentMinuteOfDay();
 }
 
 // ── Live mode (temporary online window) ─────────────────────
@@ -557,9 +633,9 @@ static bool waitForContentReady() {
         showError("Generating...");
         unsigned long t0 = millis();
         while (millis() - t0 < (unsigned long)waitMs) {
-            if (digitalRead(PIN_CFG_BTN) == LOW) {
+            if (digitalRead(PIN_KEY_BTN) == LOW) {
                 delay(400);
-                if (digitalRead(PIN_CFG_BTN) == LOW) {
+                if (digitalRead(PIN_KEY_BTN) == LOW) {
                     Serial.println("[BOOT] Config button held during wait -> portal");
                     enterPortalMode();
                     return false;
@@ -590,69 +666,74 @@ static bool waitForContentReady() {
     return false;
 }
 
-// ── Config button handler (KEY on GPIO18) ──────────────────
-// Short press (50ms–2s): advance to next server mode (next page).
-// Long press (>= 2s): enter config portal.
+// ── Button handler (BOOT=GPIO0, KEY=GPIO18) ────────────────
+// Mapping (custom key map):
+//   BOOT short click : non-settings → next page;  settings → cursor down (next item)
+//   BOOT long  press : previous page (or exit settings)
+//   KEY  short click : confirm option (settings only)
+//   KEY  long  press : enter / exit settings
+//   PWR  is a hardware power switch (long=off, click=on) — not readable by firmware.
+// Download mode: holding BOOT at power-on is handled by the ROM (strapping),
+// so the firmware only sees BOOT as a runtime input.
 static void checkConfigButton() {
-    bool isPressed = (digitalRead(PIN_CFG_BTN) == LOW);
+    if (ctx.state == DeviceState::PORTAL) return;   // portal is phone-driven
 
-    if (ctx.ignoreConfigButtonUntilRelease) {
-        if (!isPressed) {
-            ctx.ignoreConfigButtonUntilRelease = false;
-        }
-        ctx.btnPressStart = 0;
-        return;
-    }
-
-    if (isPressed) {
-        if (ctx.btnPressStart == 0) {
-            ctx.btnPressStart = millis();
+    // ── BOOT (GPIO0) ──
+    bool bootPressed = (digitalRead(PIN_BOOT_BTN) == LOW);
+    if (ctx.ignoreBootUntilRelease) {
+        if (!bootPressed) ctx.ignoreBootUntilRelease = false;
+        ctx.bootPressStart = 0;
+    } else if (bootPressed) {
+        if (ctx.bootPressStart == 0) {
+            ctx.bootPressStart = millis();
         } else {
-            unsigned long holdTime = millis() - ctx.btnPressStart;
-            if (holdTime >= (unsigned long)CFG_BTN_HOLD_MS) {
-                Serial.printf("Config button held for %dms, entering portal...\n", CFG_BTN_HOLD_MS);
-                ctx.btnPressStart = 0;
-                enterPortalMode();
+            unsigned long hold = millis() - ctx.bootPressStart;
+            if (hold >= (unsigned long)CFG_BTN_HOLD_MS) {
+                ctx.bootPressStart = 0;
+                // long press: previous page / exit settings
+                if (g_view == AppView::SETTINGS) exitSettings();
+                else prevPage();
+                ctx.ignoreBootUntilRelease = true;   // debounce until released
             }
         }
     } else {
-        if (ctx.btnPressStart != 0) {
-            unsigned long pressDuration = millis() - ctx.btnPressStart;
-            ctx.btnPressStart = 0;
+        if (ctx.bootPressStart != 0) {
+            unsigned long dur = millis() - ctx.bootPressStart;
+            ctx.bootPressStart = 0;
+            if (dur >= (unsigned long)SHORT_PRESS_MIN_MS && dur < (unsigned long)CFG_BTN_HOLD_MS) {
+                if (g_view == AppView::SETTINGS) settingsCursorNext();
+                else nextPage();
+                ctx.ignoreBootUntilRelease = true;
+            }
+        }
+    }
 
-            if (pressDuration >= (unsigned long)SHORT_PRESS_MIN_MS &&
-                pressDuration < (unsigned long)CFG_BTN_HOLD_MS) {
-                if (ctx.state != DeviceState::PORTAL) {
-                    Serial.printf("[BTN] Short press %lums\n", pressDuration);
-#if INKSIGHT_BACKEND_V2
-                    if (g_view == AppView::TODO) {
-                        if (g_todoTotalPages <= 1) {
-                            // Few todos (<=6): go straight to the image viewer.
-                            Serial.println("[BTN] TODO -> IMAGE view");
-                            g_view = AppView::IMAGE;
-                            triggerImmediateRefresh(false);  // fetch first image
-                        } else {
-                            // Multiple pages: KEY pages through todos; pressing
-                            // past the last page switches to the image viewer.
-                            g_todoPage++;
-                            if (g_todoPage >= g_todoTotalPages) {
-                                g_todoPage = 0;
-                                g_view = AppView::IMAGE;
-                                triggerImmediateRefresh(false);
-                            } else {
-                                Serial.printf("[BTN] TODO page %d/%d\n", g_todoPage + 1, g_todoTotalPages);
-                                refreshTodoView(true);
-                            }
-                        }
-                    } else {
-                        Serial.println("[BTN] IMAGE -> next image");
-                        triggerImmediateRefresh(true);   // next image
-                    }
-#else
-                    triggerImmediateRefresh(true);
-#endif
-                    ctx.ignoreConfigButtonUntilRelease = true;  // debounce until released
-                }
+    // ── KEY (GPIO18) ──
+    bool keyPressed = (digitalRead(PIN_KEY_BTN) == LOW);
+    if (ctx.ignoreKeyUntilRelease) {
+        if (!keyPressed) ctx.ignoreKeyUntilRelease = false;
+        ctx.keyPressStart = 0;
+    } else if (keyPressed) {
+        if (ctx.keyPressStart == 0) {
+            ctx.keyPressStart = millis();
+        } else {
+            unsigned long hold = millis() - ctx.keyPressStart;
+            if (hold >= (unsigned long)CFG_BTN_HOLD_MS) {
+                ctx.keyPressStart = 0;
+                // long press: enter / exit settings
+                if (g_view == AppView::SETTINGS) exitSettings();
+                else enterSettings();
+                ctx.ignoreKeyUntilRelease = true;    // debounce until released
+            }
+        }
+    } else {
+        if (ctx.keyPressStart != 0) {
+            unsigned long dur = millis() - ctx.keyPressStart;
+            ctx.keyPressStart = 0;
+            if (dur >= (unsigned long)SHORT_PRESS_MIN_MS && dur < (unsigned long)CFG_BTN_HOLD_MS) {
+                // short click: confirm (settings only); no-op elsewhere
+                if (g_view == AppView::SETTINGS) settingsConfirm();
+                ctx.ignoreKeyUntilRelease = true;
             }
         }
     }
@@ -703,9 +784,9 @@ void setup() {
     loadConfig();
 
     bool forcePortal = false;
-    if (digitalRead(PIN_CFG_BTN) == LOW) {
+    if (digitalRead(PIN_KEY_BTN) == LOW) {
         delay(400);
-        forcePortal = (digitalRead(PIN_CFG_BTN) == LOW);
+        forcePortal = (digitalRead(PIN_KEY_BTN) == LOW);
     }
 
     bool hasConfig = (cfgSSID.length() > 0);
@@ -797,15 +878,24 @@ void loop() {
     // refreshes the display. For a HH:MM status bar a per-minute full repaint
     // (RLCD's only refresh mode) is the right granularity to keep the clock
     // ticking and the battery % fresh — without re-querying the backend.
-    if (ctx.state == DeviceState::DISPLAYING && g_view == AppView::TODO && g_todoCount > 0) {
-        int m = currentMinuteOfDay();
-        if (m != g_lastPaintMinute) {
-            g_lastPaintMinute = m;
-            repaintTodoView();
+    if (ctx.state == DeviceState::DISPLAYING) {
+        if (g_view == AppView::TODO && g_todoCount > 0) {
+            int m = currentMinuteOfDay();
+            if (m != g_lastPaintMinute) {
+                g_lastPaintMinute = m;
+                repaintTodoView();
+            }
+        } else if (g_view == AppView::SETTINGS) {
+            // keep the settings clock/battery live too (no backend re-query)
+            int m = currentMinuteOfDay();
+            if (m != g_lastPaintMinute) {
+                g_lastPaintMinute = m;
+                repaintSettingsView();
+            }
         }
     }
 
-    if (millis() - ctx.setupDoneAt >= refreshIntervalMs()) {
+    if (millis() - ctx.setupDoneAt >= refreshIntervalMs() && g_view != AppView::SETTINGS) {
 #if DEBUG_MODE
         Serial.printf("[DEBUG] %d min elapsed, refreshing content...\n", DEBUG_REFRESH_MIN);
 #else
@@ -838,6 +928,8 @@ void loop() {
                 Serial.println("[NTP] RTC became valid; repainting current view");
                 if (g_view == AppView::TODO) {
                     refreshTodoView(true);
+                } else if (g_view == AppView::SETTINGS) {
+                    repaintSettingsView();
                 } else {
                     triggerImmediateRefresh(false);
                 }

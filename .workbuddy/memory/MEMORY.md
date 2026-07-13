@@ -37,14 +37,27 @@
 - 板载三颗物理键：**BOOT(GPIO0)**、**PWR(电源键)**、**KEY(GPIO18)**；另有 RST=硬件复位键。
 - **PWR 键是硬件电源开关**：`长按下电 / 单击上电`。板子"硬断电"时 ESP32 的 3.3V 被切断，芯片根本没电。
 - **因此：电池下开机必须单击 PWR 键**；BOOT / RST / KEY 都不是电源键，硬断电态下按它们无任何作用（ESP32 无电），这是硬件设计，固件改不了。
-- BOOT(GPIO0)：按住+重新上电→下载模式；已被固件配为深度睡眠唤醒源之一。
-- KEY(GPIO18)：固件里短按(50ms–2s)→翻下一页(nextMode)，长按(≥2s)→进配网 portal；也是深度睡眠唤醒源。
+## 按键映射（2026-07-14 重构后的最终定义，已实现）
+- **硬件现实**：固件**只能读取两颗键**——BOOT(GPIO0) 与 KEY(GPIO18)。**PWR 是纯硬件电源开关**
+  （长按断电 / 单击上电），不接 ESP32 任何 GPIO，**固件无法检测 PWR 短按**。下载模式是 ROM strap
+  （按住 BOOT+上电），与固件无关。
+- **最终映射（用户拍板）**：
+  - BOOT(GPIO0) 短按（非设置界面）→ 切换下一页（TODO↔IMAGE）；设置界面短按 → 光标下移（下一项）。
+  - BOOT(GPIO0) 长按(≥2s) → 上一页（非设置）/ 退出设置（设置内）。
+  - KEY(GPIO18) 短按 → 确认选项（仅设置界面有效；非设置界面无操作）。
+  - KEY(GPIO18) 长按(≥2s) → 进入 / 退出设置界面。
+  - PWR 短按=上电开机、长按=断电关机（硬件，固件不处理）。
+- **两设置菜单（两级）**：一级（左）= 系统设置；二级（右，选中后展示）= 重新配网 / 本机 MAC 地址 / 当前 WiFi 名称。
+  - 重新配网→`enterPortalMode(MANUAL)`；MAC/WiFi 名为只读信息（确认后在详情框显示 `WiFi.macAddress()`/`WiFi.SSID()`）。
+- **实现位置**：`main.cpp` 的 `checkConfigButton()` 已重构为同时轮询 BOOT+KEY，
+  `ctx` 拆出 `bootPressStart/keyPressStart/ignoreBootUntilRelease/ignoreKeyUntilRelease`；
+  `AppView` 新增 `SETTINGS`；辅助 `nextPage/prevPage/enterSettings/exitSettings/settingsCursorNext/settingsConfirm/repaintSettingsView`。
+  `display.cpp::renderSettingsScreen(cursor,detail,batteryPct,wifi)` 负责两级菜单渲染（含光标块+详情框）。
+- ⚠️ 设置界面由 KEY 长按进出；进入前记录 `g_viewBeforeSettings`，退出回到原视图。周期刷新/NTP 重绘均已对
+  SETTINGS 视图加守卫，避免误切成图片视图。
 - RST：硬件复位（硬重启），非电源键、非 GPIO 功能键。
-- 固件"自动深度睡眠"（每次刷新周期结束 `enterDeepSleep`）时 3.3V 仍通，此时 **短按 BOOT 或 KEY 可唤醒**（曾在 `enterDeepSleep` 内把 GPIO0+GPIO18 配为 LOW 唤醒源）。若用户长按 PWR 硬断电，则只能 PWR 单击救活。
-- 结论：电池下"按某键开机"的正确键是 **PWR（单击）**；想用 BOOT/KEY 唤醒，应避免长按 PWR 硬断电、改让设备自动深度睡眠。
-- **⚠️ 2026-07-13 重构后固件已不再做深度睡眠**（设备常驻在线）：上述"自动深度睡眠/唤醒源"仅作历史记录。
-  现状：KEY(GPIO18) 短按翻页/长按进配网；BOOT(GPIO0) 仅作下载模式键。要"唤醒"已无意义（设备不睡），
-  唯一让屏幕"复活"的硬件手段仍是上电（PWR 单击 或 RST 复位，后者会硬重启）。
+- **⚠️ 2026-07-13 重构后固件已不再做深度睡眠**（设备常驻在线）。唯一让屏幕"复活"的硬件手段仍是上电
+  （PWR 单击 或 RST 复位，后者会硬重启）。
 
 ## ima 知识库 MCP 限制（重要）
 - 已连接的 `ima-mcp` 连接器**只暴露只读工具**：`get_knowledge_base_list`、`get_knowledge_list`、
@@ -57,10 +70,9 @@
 - 重构后只保留两大核心功能：① 原生待办列表（设备本地渲染）② 网络图片展示（后端下发 1-bit BMP，本地缓存≤5张，按键切换）。
 - 统一 UI：黑白墨水长屏复古像素风，三层（状态栏/内容区/底栏），字号层级 时间>待办正文>日期·提醒·分页·底栏。
 - 三项已确认决策：D1 待办由 Web/App 后台管理、设备只拉取展示；D2 图片独立新建 FastAPI 服务 `inksight-content`（与现有 LLM backend 解耦）；D3 按键模型见下。
-- **新按键模型（规划已确认，需改固件）**：短按 KEY(GPIO18)=上一页/上一张；短按 BOOT(GPIO0)=下一页/下一张。
-  - 规划建议（待用户拍板）：长按 KEY(≥2s)=在待办/图片 App 间切换；长按 BOOT(≥2s)=进配网 Portal（替代原"长按 KEY=portal"）。
-  - 此模型**取代**原固件 KEY 短按=翻下一页/长按=portal 的行为，实施时需同步改 `checkConfigButton`。
-  - BOOT(GPIO0) 运行时长按安全可复用（下载模式仅"按住+重新上电"触发），`config.h` 需新增 `PIN_NEXT_BTN 0`。
+- **新按键模型**：见上文"按键映射（2026-07-14 重构后的最终定义，已实现）"。原规划"短按 KEY=上一张/短按 BOOT=下一张"
+  已被用户最终拍板版本取代（BOOT 短按=下一页/光标下移，KEY 短按=确认，KEY 长按=进/出设置）。`checkConfigButton`
+  已重构、`config.h` 已新增 `PIN_KEY_BTN 18` / `PIN_BOOT_BTN 0`（保留 `PIN_CFG_BTN` 兼容 setup/等待）。
 - **关键缺口**：现有 `display.cpp::drawText` 仅 5×7 ASCII 字体，无 CJK 字库，无法渲染中文待办正文。
   原生渲染须新增 `hanzi_font` 16×16 点阵（建议 3500 常用字 ~112KB，放 Flash/PSRAM）+ `draw7Seg` 数码管时间 + `drawMixed` 中英文混排。
 - 图片模式：后端把图预处理成内容区尺寸(400×214)的 1-bit BMP 下发，设备原生画 chrome 并 blit 图片缓冲，本地 5 张缓存用 PSRAM。

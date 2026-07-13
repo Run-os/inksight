@@ -16,7 +16,10 @@
 #define PIN_EPD_RST    41
 #define PIN_EPD_BUSY   -1     // RLCD has no BUSY line
 #define PIN_BAT_ADC    4      // battery sense: GPIO4 (ADC1_CH3), 3x divider (Waveshare RLCD-4.2)
-#define PIN_CFG_BTN    18     // KEY button (active low, GPIO18); BOOT(GPIO0) is download-mode only
+#define PIN_CFG_BTN    18     // legacy alias: KEY button (active low, GPIO18)
+#define PIN_KEY_BTN     18     // KEY button (active low, GPIO18): confirm / enter-exit settings
+#define PIN_BOOT_BTN    0      // BOOT button (active low, GPIO0): next page / cursor / prev page;
+                               // also hardware download-mode when held during power-on (ROM, not firmware)
 #define PIN_LED        -1
 #define PIN_RGB_LED    48
 

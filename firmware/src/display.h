@@ -48,4 +48,9 @@ struct TodoItem {
 void renderTodoScreen(const TodoItem *items, int count, int page, int totalPages,
                       int batteryPct, bool wifiConnected, bool autoDisplay = true);
 
+// Render the two-level settings menu: 系统设置 (left) -> 重新配网 / 本机MAC地址 /
+// 当前WiFi名称 (right). `cursor` highlights a 二级 item; `detail` shows a read-only
+// info box (1=MAC, 2=WiFi name), -1 = none.
+void renderSettingsScreen(int cursor, int detail, int batteryPct, bool wifiConnected);
+
 #endif // INKSIGHT_DISPLAY_H
