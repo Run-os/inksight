@@ -13,6 +13,10 @@
 ## 构建环境
 - PlatformIO 在中文路径下链接失败（`ld.exe cannot open map file`），已在 `platformio.ini` 设
   `build_dir = C:/Users/liuyz/inksight_pio_build`（纯 ASCII）。
+- **分区表坑**：`partitions/inksight_16mb_ota.csv` 数据分区须让 `LittleFS` 可用。
+  该工具链 `gen_esp32part` **不认 `littlefs` 关键字**，只接受数字 subtype；故写成
+  `spiffs, data, 0x83, 0xa10000, 0x5f0000,`（Name 保留 `spiffs` 以匹配 `LittleFS.begin` 默认 `partitionLabel="spiffs"`，
+  subtype `0x83`=littlefs 让 esp_littlefs 能格式化）。改分区表后**必须 erase+重烧**，否则旧分区表仍使 LittleFS 挂载失败(-84)。
 
 ## 显示与架构
 - `epd_driver.cpp` 只剩 `EPD_PANEL_42_RLCD` 实现；`platformio.ini` 单 env `epd_42_rlcd_s3_n16r8`。

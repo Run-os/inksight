@@ -1,40 +1,28 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // RLCD (ESP32-S3-RLCD-4.2) reflective LCD driver — ST7305 controller.
-// Ported from the vendor example display_bsp.cpp (ESP-IDF) to the Arduino SPI API.
+// Software SPI implementation (bit-banging), since hardware HSPI/FSPI is used
+// by the SD card module on this board.
 // See rlcd_bsp.h for the pixel-packing description.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "rlcd_bsp.h"
 #include <cassert>
 
-#ifndef RLCD_SPI_HZ
-#define RLCD_SPI_HZ 12000000  // conservative; vendor example used 10 MHz
-#endif
-
-DisplayPort::DisplayPort(int mosi, int scl, int dc, int cs, int rst, int width, int height,
-                         SPIClass *spi)
+DisplayPort::DisplayPort(int mosi, int scl, int dc, int cs, int rst, int width, int height)
     : mosi_(mosi), scl_(scl), dc_(dc), cs_(cs), rst_(rst), width_(width), height_(height) {
-    if (spi) {
-        spi_ = spi;
-    } else {
-        // The vendor examples drive this panel on SPI3_HOST (Arduino HSPI on
-        // ESP32-S3). It is a dedicated user bus, not shared with QSPI flash/PSRAM.
-        spi_ = new SPIClass(HSPI);
-    }
-
-    // Bus + GPIO setup
     pinMode(dc_, OUTPUT);
     pinMode(cs_, OUTPUT);
     pinMode(rst_, OUTPUT);
+    pinMode(mosi_, OUTPUT);
+    pinMode(scl_, OUTPUT);
     digitalWrite(cs_, HIGH);
     digitalWrite(dc_, HIGH);
     digitalWrite(rst_, HIGH);
-
-    spi_->begin(scl_, -1, mosi_, -1);
-    spi_->beginTransaction(SPISettings(RLCD_SPI_HZ, MSBFIRST, SPI_MODE0));
+    digitalWrite(mosi_, LOW);
+    digitalWrite(scl_, LOW);
 
     int transfer = width_ * height_;
-    DisplayLen = transfer >> 3;  // 1 byte = 8 pixels
+    DisplayLen = transfer >> 3;
     DispBuffer = (uint8_t *)malloc(DisplayLen);
     assert(DispBuffer);
 
@@ -57,11 +45,6 @@ DisplayPort::~DisplayPort() {
     if (PixelIndexLUT) free(PixelIndexLUT);
     if (PixelBitLUT) free(PixelBitLUT);
 #endif
-    if (spi_) {
-        spi_->endTransaction();
-        spi_->end();
-        delete spi_;
-    }
 }
 
 void DisplayPort::SetResetIOLevel(uint8_t level) {
@@ -77,24 +60,41 @@ void DisplayPort::Reset() {
     delay(50);
 }
 
+inline void DisplayPort::spi_write_bit(bool bit) {
+    digitalWrite(mosi_, bit ? HIGH : LOW);
+    delayMicroseconds(1);
+    digitalWrite(scl_, HIGH);
+    delayMicroseconds(1);
+    digitalWrite(scl_, LOW);
+    delayMicroseconds(1);
+}
+
+inline void DisplayPort::spi_write_byte(uint8_t data) {
+    for (int i = 7; i >= 0; i--) {
+        spi_write_bit((data >> i) & 1);
+    }
+}
+
 void DisplayPort::SendCommand(uint8_t reg) {
     digitalWrite(dc_, LOW);
     digitalWrite(cs_, LOW);
-    spi_->transfer(reg);
+    spi_write_byte(reg);
     digitalWrite(cs_, HIGH);
 }
 
 void DisplayPort::SendData(uint8_t data) {
     digitalWrite(dc_, HIGH);
     digitalWrite(cs_, LOW);
-    spi_->transfer(data);
+    spi_write_byte(data);
     digitalWrite(cs_, HIGH);
 }
 
 void DisplayPort::SendBuffer(const uint8_t *data, int len) {
     digitalWrite(dc_, HIGH);
     digitalWrite(cs_, LOW);
-    spi_->writeBytes(data, len);
+    for (int i = 0; i < len; i++) {
+        spi_write_byte(data[i]);
+    }
     digitalWrite(cs_, HIGH);
 }
 
@@ -102,18 +102,18 @@ void DisplayPort::SendBuffer(const uint8_t *data, int len) {
 void DisplayPort::Init() {
     Reset();
 
-    SendCommand(0xD6);  // NVM Load Control
+    SendCommand(0xD6);
     SendData(0x17);
     SendData(0x02);
 
-    SendCommand(0xD1);  // Booster Enable
+    SendCommand(0xD1);
     SendData(0x01);
 
-    SendCommand(0xC0);  // Gate Voltage Control
+    SendCommand(0xC0);
     SendData(0x11);
     SendData(0x04);
 
-    SendCommand(0xC1);  // VSHP Setting
+    SendCommand(0xC1);
     SendData(0x69);
     SendData(0x69);
     SendData(0x69);
@@ -213,7 +213,7 @@ void DisplayPort::Init() {
     SendCommand(0x38);
     SendCommand(0x29);
 
-    ColorClear(0xFF);  // white
+    ColorClear(0xFF);
     Display();
 }
 
@@ -222,15 +222,15 @@ void DisplayPort::ColorClear(uint8_t color) {
 }
 
 void DisplayPort::Display() {
-    SendCommand(0x2A);  // Column Address Set
+    SendCommand(0x2A);
     SendData(0x12);
     SendData(0x2A);
 
-    SendCommand(0x2B);  // Page Address Set
+    SendCommand(0x2B);
     SendData(0x00);
     SendData(0xC7);
 
-    SendCommand(0x2C);  // Memory Write
+    SendCommand(0x2C);
     SendBuffer(DispBuffer, DisplayLen);
 }
 
@@ -285,7 +285,6 @@ void DisplayPort::Blit1bpp(const uint8_t *src, int srcW, int srcH, bool blackIsZ
     for (int y = 0; y < srcH; y++) {
         for (int x = 0; x < srcW; x++) {
             uint8_t bit = src[y * rowBytes + (x / 8)] & (0x80 >> (x % 8));
-            // firmware imgBuf: black = 0, white = 1 (bit set = white)
             bool isWhite = blackIsZero ? (bit != 0) : (bit == 0);
             SetPixel(x, y, isWhite ? 0xFF : 0x00);
         }

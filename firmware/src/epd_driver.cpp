@@ -25,7 +25,13 @@ static void rlcdEnsure() {
 // ── GPIO initialization ─────────────────────────────────────
 
 void gpioInit() {
-    pinMode(PIN_CFG_BTN, INPUT_PULLUP);
+    pinMode(PIN_CFG_BTN, INPUT_PULLUP);    // KEY button (GPIO18)
+    pinMode(PIN_BOOT_BTN, INPUT_PULLUP);   // BOOT button (GPIO0)
+    int keyLvl  = digitalRead(PIN_CFG_BTN);
+    int bootLvl = digitalRead(PIN_BOOT_BTN);
+    Serial.printf("[GPIO] init: KEY(GPIO18)=%s BOOT(GPIO0)=%s  [LOW means pressed]\n",
+                  keyLvl  == LOW ? "LOW" : "HIGH",
+                  bootLvl == LOW ? "LOW" : "HIGH");
     // Display pins are configured inside DisplayPort::Init().
 }
 

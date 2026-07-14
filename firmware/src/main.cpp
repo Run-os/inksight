@@ -9,6 +9,7 @@
 #include <driver/gpio.h>
 #include <new>
 #include <WiFi.h>
+#include "esp_log.h"
 
 #include "config.h"
 #if PIN_RGB_LED >= 0
@@ -134,21 +135,21 @@ static void extendTemporaryOnlineWindow(const char *reason) {
     ctx.liveMode = true;
     ctx.lastLivePollAt = 0;
     ctx.lastLiveWiFiRetryAt = 0;
-    Serial.printf("[LIVE] Temporary online window: %lu min", TEMP_ONLINE_WINDOW_MS / 60000UL);
-    if (reason && reason[0]) Serial.printf(" (%s)", reason);
-    Serial.println();
+    log_printf("[LIVE] 临时在线窗口：%lu 分钟", TEMP_ONLINE_WINDOW_MS / 60000UL);
+    if (reason && reason[0]) log_printf(" (%s)", reason);
+    log_printf("\n");
 }
 
 // ── Activity flags from backend ─────────────────────────────
 static bool refreshActivityFlags() {
     bool enabled = false, always = false;
     if (!fetchFocusListeningFlag(&enabled, &always)) {
-        Serial.println("[FOCUS] fetch failed, keeping previous flags");
+        log_printf("[FOCUS] 获取失败，沿用上次标志\n");
         return false;
     }
     focusListening = enabled;
     alwaysActive = always;
-    Serial.printf("[FOCUS] listening=%d alwaysActive=%d\n", enabled, always);
+    log_printf("[FOCUS] 监听=%d 常驻活跃=%d\n", enabled, always);
     return true;
 }
 
@@ -254,7 +255,7 @@ static void enterPortalMode(PortalEntryReason reason) {
     ctx.portalStartedAt = millis();
     ctx.portalTimeoutMs = (reason == PortalEntryReason::MANUAL)
         ? PORTAL_MANUAL_TIMEOUT_MS : PORTAL_AUTO_TIMEOUT_MS;
-    Serial.printf("[PORTAL] AP: %s (timeout %lums)\n", apName.c_str(), ctx.portalTimeoutMs);
+    log_printf("[PORTAL] 热点：%s（超时 %lums）\n", apName.c_str(), ctx.portalTimeoutMs);
 }
 
 static void checkPortalTimeout() {
@@ -265,7 +266,7 @@ static void checkPortalTimeout() {
     if (now - ctx.portalStartedAt < ctx.portalTimeoutMs) {
         return;
     }
-    Serial.printf("[PORTAL] Timeout %lus — rebooting to retry\n", ctx.portalTimeoutMs / 1000UL);
+    log_printf("[PORTAL] 超时 %lus——重启重试\n", ctx.portalTimeoutMs / 1000UL);
     ctx.portalStartedAt = 0;
     ctx.portalTimeoutMs = 0;
     delay(500);
@@ -281,12 +282,12 @@ static void showFailureDiagnostic(const char *reason) {
 }
 
 static void handleFailure(const char *reason) {
-    Serial.printf("[DIAG] %s | SSID=%s | Server=%s\n",
+    log_printf("[DIAG] %s | SSID=%s | 服务器=%s\n",
                   reason, cfgSSID.c_str(), cfgServer.c_str());
     showFailureDiagnostic(reason);
 
     if (cacheLoad(imgBuf, IMG_BUF_LEN)) {
-        Serial.println("Showing cached content (offline mode)");
+        log_printf("显示缓存内容（离线模式）\n");
         const int offlineScale = 2;
         const int offlineLen = 7;
         const int offlineWidth = offlineLen * (5 * offlineScale + offlineScale) - offlineScale;
@@ -306,7 +307,7 @@ static void handleFailure(const char *reason) {
 
     // No cache and server down: stay in DISPLAYING so loop() retries on the
     // next refresh interval (device is always awake, no deep sleep).
-    Serial.println("No cached content; will retry on next refresh cycle");
+    log_printf("无缓存内容；下个刷新周期重试\n");
     ctx.state = DeviceState::ERROR;
     ctx.setupDoneAt = millis();
 }
@@ -317,16 +318,16 @@ static void handleFailure(const char *reason) {
 // the captive portal so the user can fix or add credentials.
 static void handleWiFiFailure() {
     for (int i = 0; i < WIFI_PORTAL_RETRY_SWEEPS; i++) {
-        Serial.printf("[DIAG] WiFi unreachable, quick retry sweep %d/%d in %lus\n",
+        log_printf("[DIAG] WiFi 不可达，快速重试 %d/%d（%lus 后）\n",
                       i + 1, WIFI_PORTAL_RETRY_SWEEPS, WIFI_PORTAL_RETRY_DELAY_MS / 1000);
         delay(WIFI_PORTAL_RETRY_DELAY_MS);
         if (connectWiFi()) {
-            Serial.println("[DIAG] WiFi recovered");
+            log_printf("[DIAG] WiFi 已恢复\n");
             return;
         }
         if (g_userAborted) break;
     }
-    Serial.println("[DIAG] WiFi still unreachable -> captive portal");
+    log_printf("[DIAG] WiFi 仍不可达 -> 配网门户\n");
     enterPortalMode(PortalEntryReason::AUTO_WIFI_FAILURE);
 }
 
@@ -337,7 +338,7 @@ static void refreshTodoView(bool forceRepaint) {
     TodoItem todoItems[TODO_MAX];
     int todoCount = 0;
     if (!fetchTodos(todoItems, todoCount, TODO_MAX) || todoCount == 0) {
-        Serial.println("[TODO] fetch empty/failed; keeping current screen");
+        log_printf("[TODO] 拉取为空/失败；保持当前屏幕\n");
         return;
     }
     // Cache items so the live clock/battery repaint (loop) can reuse them
@@ -364,7 +365,7 @@ static void refreshTodoView(bool forceRepaint) {
         cacheSave(imgBuf, IMG_BUF_LEN);
         g_lastPaintMinute = currentMinuteOfDay();
     }
-    Serial.printf("[TODO] rendered page %d/%d (%d items)\n", g_todoPage + 1, totalPages, n);
+    log_printf("[TODO] 已渲染第 %d/%d 页（%d 项）\n", g_todoPage + 1, totalPages, n);
 }
 
 // Repaint the current todo page with the LIVE clock (the status bar reads the
@@ -401,13 +402,13 @@ static void nextPage() {
     g_view = (g_view == AppView::IMAGE) ? AppView::TODO : AppView::IMAGE;
     if (g_view == AppView::IMAGE) triggerImmediateRefresh(false);
     else refreshTodoView(true);
-    Serial.printf("[VIEW] next -> %s\n", g_view == AppView::TODO ? "TODO" : "IMAGE");
+    log_printf("[VIEW] 下一页 -> %s\n", g_view == AppView::TODO ? "TODO" : "IMAGE");
 }
 static void prevPage() {
     g_view = (g_view == AppView::IMAGE) ? AppView::TODO : AppView::IMAGE;
     if (g_view == AppView::IMAGE) triggerImmediateRefresh(false);
     else refreshTodoView(true);
-    Serial.printf("[VIEW] prev -> %s\n", g_view == AppView::TODO ? "TODO" : "IMAGE");
+    log_printf("[VIEW] 上一页 -> %s\n", g_view == AppView::TODO ? "TODO" : "IMAGE");
 }
 
 static void enterSettings() {
@@ -418,14 +419,14 @@ static void enterSettings() {
     renderSettingsScreen(g_settingsCursor, g_settingsDetail, liveBatteryPct(), liveWifi());
     lastContentChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
     g_lastPaintMinute = currentMinuteOfDay();
-    Serial.println("[SETTINGS] entered");
+    log_printf("[SETTINGS] 已进入\n");
 }
 static void exitSettings() {
     g_view = g_viewBeforeSettings;
     g_settingsDetail = -1;
     if (g_view == AppView::IMAGE) triggerImmediateRefresh(false);
     else refreshTodoView(true);
-    Serial.println("[SETTINGS] exited");
+    log_printf("[SETTINGS] 已退出\n");
 }
 // BOOT short click inside settings: move cursor to the next (down) 二级 item.
 static void settingsCursorNext() {
@@ -434,13 +435,13 @@ static void settingsCursorNext() {
     renderSettingsScreen(g_settingsCursor, g_settingsDetail, liveBatteryPct(), liveWifi());
     lastContentChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
     g_lastPaintMinute = currentMinuteOfDay();
-    Serial.printf("[SETTINGS] cursor=%d\n", g_settingsCursor);
+    log_printf("[SETTINGS] 光标=%d\n", g_settingsCursor);
 }
 // KEY short click inside settings: confirm the highlighted item.
 static void settingsConfirm() {
     int item = g_settingsCursor;
     if (item == 0) {                       // 重新配网 -> captive portal
-        Serial.println("[SETTINGS] 重新配网 -> portal");
+        log_printf("[SETTINGS] 重新配网 -> portal\n");
         enterPortalMode(PortalEntryReason::MANUAL);
         return;
     }
@@ -448,7 +449,7 @@ static void settingsConfirm() {
     renderSettingsScreen(g_settingsCursor, g_settingsDetail, liveBatteryPct(), liveWifi());
     lastContentChecksum = computeChecksum(imgBuf, IMG_BUF_LEN);
     g_lastPaintMinute = currentMinuteOfDay();
-    Serial.printf("[SETTINGS] confirm item %d (detail)\n", item);
+    log_printf("[SETTINGS] 确认第 %d 项（详情）\n", item);
 }
 static void repaintSettingsView() {
     renderSettingsScreen(g_settingsCursor, g_settingsDetail, liveBatteryPct(), liveWifi());
@@ -470,7 +471,7 @@ static void handleLiveMode() {
         if (WiFi.status() == WL_CONNECTED) {
             postRuntimeMode("interval");
         }
-        Serial.println("[LIVE] Temporary online window expired, returning to interval mode");
+        log_printf("[LIVE] 临时在线窗口已过期，返回间隔模式\n");
         return;
     }
     if (WiFi.status() != WL_CONNECTED) {
@@ -478,9 +479,9 @@ static void handleLiveMode() {
             ctx.lastLiveWiFiRetryAt = now;
             ledFeedback("connecting");
             if (connectWiFi()) {
-                Serial.println("[LIVE] WiFi connected");
+                log_printf("[LIVE] WiFi 已连接\n");
             } else {
-                Serial.println("[LIVE] WiFi reconnect failed");
+                log_printf("[LIVE] WiFi 重连失败\n");
             }
         }
         return;
@@ -494,7 +495,7 @@ static void handleLiveMode() {
 
     bool shouldExitLive = false;
     if (hasPendingRemoteAction(&shouldExitLive)) {
-        Serial.println("[LIVE] Pending action detected, refreshing now");
+        log_printf("[LIVE] 检测到待处理操作，立即刷新\n");
         refreshActivityFlags();
         triggerImmediateRefresh(false, true);
         ctx.setupDoneAt = millis();
@@ -509,12 +510,12 @@ static void handleLiveMode() {
         postRuntimeMode("interval");
         WiFi.disconnect(true);
         WiFi.mode(WIFI_OFF);
-        Serial.println("[LIVE] Backend requested interval mode");
+        log_printf("[LIVE] 后端要求间隔模式\n");
         return;
     }
 
     if (millis() - ctx.setupDoneAt >= refreshIntervalMs()) {
-        Serial.printf("[LIVE] Fallback %d min elapsed, refreshing content...\n", cfgSleepMin);
+        log_printf("[LIVE] 备用 %d 分钟已过，刷新内容...\n", cfgSleepMin);
         triggerImmediateRefresh(false, true);
         ctx.setupDoneAt = millis();
         if (!focusListening && !alwaysActive) {
@@ -526,7 +527,7 @@ static void handleLiveMode() {
 
 // ── Immediate refresh (fetch + display) ─────────────────────
 static void triggerImmediateRefresh(bool nextMode, bool keepWiFi, bool skipNtp) {
-    Serial.println("[REFRESH] Triggering immediate refresh...");
+    log_printf("[REFRESH] 触发立即刷新...\n");
     ledFeedback("ack");
     uint8_t *previousImage = nullptr;
     if (nextMode) {
@@ -539,7 +540,7 @@ static void triggerImmediateRefresh(bool nextMode, bool keepWiFi, bool skipNtp) 
     auto restorePreviousImage = [&]() {
         if (nextMode && previousImage) {
             memcpy(imgBuf, previousImage, IMG_BUF_LEN);
-            Serial.println("[REFRESH] Restoring previous image after failed next-mode refresh");
+            log_printf("[REFRESH] 下模式刷新失败，恢复上一张图片\n");
             smartDisplay(imgBuf);
         }
     };
@@ -564,14 +565,14 @@ static void triggerImmediateRefresh(bool nextMode, bool keepWiFi, bool skipNtp) 
                 syncNTP();
             }
             if (newChecksum == lastContentChecksum && !nextMode) {
-                Serial.println("Content unchanged, skipping display refresh");
+                log_printf("内容未变，跳过屏幕刷新\n");
                 ledFeedback("success");
             } else {
-                Serial.println("Displaying new content...");
+                log_printf("正在显示新内容...\n");
                 smartDisplay(imgBuf);
                 lastContentChecksum = newChecksum;
                 ledFeedback("success");
-                Serial.println("Display done");
+                log_printf("显示完成\n");
             }
 
             lastRenderedPeriod = currentPeriodIndex();
@@ -579,10 +580,10 @@ static void triggerImmediateRefresh(bool nextMode, bool keepWiFi, bool skipNtp) 
         } else {
             bool retryReady = false;
             if (keepWiFiEffective && WiFi.status() == WL_CONNECTED) {
-                Serial.println("Fetch failed, retrying on existing WiFi...");
+                log_printf("拉取失败，在当前 WiFi 上重试...\n");
                 retryReady = true;
             } else {
-                Serial.println("Fetch failed, retrying after reconnect...");
+                log_printf("拉取失败，重连后重试...\n");
                 WiFi.disconnect(true);
                 delay(300);
                 retryReady = connectWiFi();
@@ -601,15 +602,15 @@ static void triggerImmediateRefresh(bool nextMode, bool keepWiFi, bool skipNtp) 
                     lastRenderedPeriod = currentPeriodIndex();
                     ctx.lastClockTick = millis();
                     ledFeedback("success");
-                    Serial.println("Retry succeeded");
+                    log_printf("重试成功\n");
                 } else {
                     ledFeedback("fail");
-                    Serial.println("Retry also failed, keeping old content");
+                    log_printf("重试也失败，保留旧内容\n");
                     restorePreviousImage();
                 }
             } else {
                 ledFeedback("fail");
-                Serial.println("WiFi reconnect failed, keeping old content");
+                log_printf("WiFi 重连失败，保留旧内容\n");
                 restorePreviousImage();
             }
         }
@@ -619,7 +620,7 @@ static void triggerImmediateRefresh(bool nextMode, bool keepWiFi, bool skipNtp) 
         }
     } else {
         ledFeedback("fail");
-        Serial.println("WiFi reconnect failed");
+        log_printf("WiFi 重连失败\n");
         restorePreviousImage();
     }
     if (previousImage) free(previousImage);
@@ -629,14 +630,14 @@ static bool waitForContentReady() {
     const int maxRetries = 4;
     const int waitMs = 15000;
     for (int i = 0; i < maxRetries; i++) {
-        Serial.printf("[BOOT] Content not ready, retry %d/%d\n", i + 1, maxRetries);
+        log_printf("[BOOT] 内容未就绪，重试 %d/%d\n", i + 1, maxRetries);
         showError("Generating...");
         unsigned long t0 = millis();
         while (millis() - t0 < (unsigned long)waitMs) {
             if (digitalRead(PIN_KEY_BTN) == LOW) {
                 delay(400);
                 if (digitalRead(PIN_KEY_BTN) == LOW) {
-                    Serial.println("[BOOT] Config button held during wait -> portal");
+                    log_printf("[BOOT] 等待期间配置键长按 -> 配网门户\n");
                     enterPortalMode();
                     return false;
                 }
@@ -655,7 +656,7 @@ static bool waitForContentReady() {
         ledFeedback("downloading");
         bool gotFallback = false;
         if (fetchBMP(false, &gotFallback) && !gotFallback) {
-            Serial.println("[BOOT] Content is ready");
+            log_printf("[BOOT] 内容已就绪\n");
             return true;
         }
         if (g_userAborted) {
@@ -739,27 +740,35 @@ static void checkConfigButton() {
     }
 }
 
+// ── 开机横幅（立即打印 + 延时后重打 + 前30秒每5秒重报）──
+static const char *FW_DEBUG_TAG = "INKSIGHT_FW_DEBUG_20260714";
+static unsigned long g_announceUntil = 0;
+static void printBootBanner() {
+    log_printf("\n=== InkSight RLCD ===\n");
+    log_printf("[BOOT] 固件指纹=%s 构建=%s %s\n",
+              FW_DEBUG_TAG, __DATE__, __TIME__);
+    log_printf("[BOOT] 按键映射：BOOT(GPIO0) 短按=下一页/下移 长按=上一页/退出 | KEY(GPIO18) 短按=确认 长按=进/出设置\n");
+}
+
 // ── setup() ─────────────────────────────────────────────────
 void setup() {
     ledInit();
     Serial.begin(115200);
-#if defined(BOARD_PROFILE_RLCD_S3)
-    delay(800);    // RLCD powers on instantly; no long e-ink settle delay needed
-#else
-    delay(3000);
-#endif
+    printBootBanner();   // 第一份：延时前立即打印，最早输出
+    delay(3000);         // 等待串口监视器连接
+    printBootBanner();   // 第二份：延时期间连上的监视器也能捕获
+    g_announceUntil = millis() + 30000UL;  // 前30秒持续重报身份
 #if defined(BOARD_PROFILE_ESP32_C3_WROOM02) || defined(BOARD_PROFILE_SMT_WROOM32E) || defined(BOARD_PROFILE_YD_ESP32_S3_N16R8) || defined(BOARD_PROFILE_RLCD_S3)
     analogReadResolution(12);
     analogSetAttenuation(ADC_11db);
 #endif
-    Serial.println("\n=== InkSight RLCD ===");
 
     gpioInit();
     ctx.state = DeviceState::BOOT;
 
     epdInit();
     cacheInit();
-    Serial.println("EPD ready");
+    log_printf("EPD 就绪\n");
 
     // 1) Show the initialization / boot screen FIRST (before any network work).
     showBootScreen();
@@ -800,7 +809,7 @@ void setup() {
     }
 
     if (cfgServer.length() == 0) {
-        Serial.println("No server URL configured -> portal");
+        log_printf("未配置服务器地址 -> 配网门户\n");
         enterPortalMode();
         return;
     }
@@ -808,7 +817,7 @@ void setup() {
     ledFeedback("connecting");
     if (!connectWiFi()) {
         if (g_userAborted) {
-            Serial.println("User aborted during WiFi connect -> portal");
+            log_printf("WiFi 连接期间用户中断 -> 配网门户\n");
             enterPortalMode();
             return;
         }
@@ -822,18 +831,18 @@ void setup() {
         alwaysActive = false;
     }
     if (g_userAborted) {
-        Serial.println("User aborted during focus fetch -> portal");
+        log_printf("Focus 拉取期间用户中断 -> 配网门户\n");
         enterPortalMode();
         return;
     }
 
     // ── Default view: todo list pulled from inksight-server ──
-    Serial.println("Fetching todos...");
+    log_printf("正在拉取待办...\n");
     ledFeedback("downloading");
     refreshTodoView(true);   // renders real todos; keeps demo screen if fetch fails
     ledFeedback("success");
     syncNTP();   // after first paint so the screen lights sooner
-    Serial.println("Display done");
+    log_printf("显示完成\n");
     lastRenderedPeriod = currentPeriodIndex();
     ctx.lastClockTick = millis();
 
@@ -841,11 +850,33 @@ void setup() {
     g_view = AppView::TODO;
     ctx.state = DeviceState::DISPLAYING;
     ctx.setupDoneAt = millis();
-    Serial.println("Boot complete (inksight-server mode), entering main loop (always on)");
+    log_printf("启动完成（inksight-server 模式），进入主循环（常驻在线）\n");
 }
 
 // ── loop() ──────────────────────────────────────────────────
 void loop() {
+    // ── 诊断心跳：前30秒每5秒（带固件指纹），之后每30秒（轻量）──
+    {
+        static unsigned long lastHb = 0;
+        bool announcing = (millis() < g_announceUntil);
+        unsigned long hbInterval = announcing ? 5000UL : 30000UL;
+        if (millis() - lastHb >= hbInterval) {
+            lastHb = millis();
+            if (announcing) {
+                log_printf("[HB] 指纹=%s 构建=%s %s 状态=%d 视图=%d WiFi=%s 时钟=%d 堆=%d\n",
+                          FW_DEBUG_TAG, __DATE__, __TIME__,
+                          (int)ctx.state, (int)g_view,
+                          (WiFi.status() == WL_CONNECTED) ? "up" : "down",
+                          rtcTimeValid() ? 1 : 0, ESP.getFreeHeap());
+            } else {
+                log_printf("[HB] 状态=%d 视图=%d WiFi=%s 时钟=%d 堆=%d\n",
+                          (int)ctx.state, (int)g_view,
+                          (WiFi.status() == WL_CONNECTED) ? "up" : "down",
+                          rtcTimeValid() ? 1 : 0, ESP.getFreeHeap());
+            }
+        }
+    }
+
     if (ctx.state == DeviceState::PORTAL) {
         handlePortalClients();
         checkPortalTimeout();
@@ -897,9 +928,9 @@ void loop() {
 
     if (millis() - ctx.setupDoneAt >= refreshIntervalMs() && g_view != AppView::SETTINGS) {
 #if DEBUG_MODE
-        Serial.printf("[DEBUG] %d min elapsed, refreshing content...\n", DEBUG_REFRESH_MIN);
+        log_printf("[DEBUG] %d 分钟已过，刷新内容...\n", DEBUG_REFRESH_MIN);
 #else
-        Serial.printf("%d min elapsed, refreshing content...\n", cfgSleepMin);
+        log_printf("%d 分钟已过，刷新内容...\n", cfgSleepMin);
 #endif
 #if INKSIGHT_BACKEND_V2
         if (g_view == AppView::TODO) {
@@ -925,7 +956,7 @@ void loop() {
             syncNTP();
             ctx.lastNtpSyncAt = millis();
             if (wasInvalid && rtcTimeValid()) {
-                Serial.println("[NTP] RTC became valid; repainting current view");
+                log_printf("[NTP] 时钟已校准；重绘当前视图\n");
                 if (g_view == AppView::TODO) {
                     refreshTodoView(true);
                 } else if (g_view == AppView::SETTINGS) {
@@ -950,7 +981,7 @@ void loop() {
     if (!alertBackupBuf) {
         alertBackupBuf = (uint8_t *)malloc(IMG_BUF_LEN);
         if (!alertBackupBuf) {
-            Serial.println("[MEM] alertBackupBuf malloc failed; focus alerts disabled");
+            log_printf("[MEM] alertBackupBuf 分配失败；Focus 告警已禁用\n");
         }
     }
 #else

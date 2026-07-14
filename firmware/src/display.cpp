@@ -158,12 +158,12 @@ static void fillRect(int x, int y, int w, int h) {
 
 // ── Show WiFi setup screen ──────────────────────────────────
 
-void showSetupScreen(const char *apName) {
+void showSetupScreen(const char *apName, const char *url) {
     memset(imgBuf, 0xFF, IMG_BUF_LEN);
 
     fillRect(0, 0, W, H * 12 / 100);
     fillRect(W * 8 / 100, H * 28 / 100, W * 84 / 100, H * 2 / 100);
-    fillRect(W * 8 / 100, H * 72 / 100, W * 84 / 100, H * 2 / 100);
+    fillRect(W * 8 / 100, H * 88 / 100, W * 84 / 100, H * 2 / 100);
 
     const char *title = "SETUP WIFI";
     int titleScale = (H < 200) ? 1 : 2;
@@ -182,13 +182,17 @@ void showSetupScreen(const char *apName) {
     int apY = H * 46 / 100;
     drawText(apName, apX, apY, apScale);
 
-    const char *line3 = "OPEN BROWSER";
+    const char *line3 = "OPEN BROWSER AT";
     int line3X = (W - asciiTextWidth(line3, bodyScale)) / 2;
-    int line3Y = H * 62 / 100;
+    int line3Y = H * 60 / 100;
     drawText(line3, line3X, line3Y, bodyScale);
 
+    int urlX = (W - asciiTextWidth(url, bodyScale)) / 2;
+    int urlY = H * 70 / 100;
+    drawText(url, urlX, urlY, bodyScale);
+
     epdDisplay(imgBuf);
-    Serial.printf("Setup screen shown: %s\n", apName);
+    Serial.printf("Setup screen shown: AP=%s URL=%s\n", apName, url);
 }
 
 // ── Show diagnostic screen ──────────────────────────────────

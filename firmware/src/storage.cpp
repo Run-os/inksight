@@ -68,11 +68,22 @@ static void syncPrimaryRuntime() {
 // ── Load config from NVS ────────────────────────────────────
 
 void loadConfig() {
-    prefs.begin("inksight", true);  // read-only
+    if (!prefs.begin("inksight", true)) {  // read-only; first run => namespace absent
+        Serial.println("[CFG] No saved config (first run) -> using defaults");
+        cfgSSID = "";
+        cfgPass = "";
+        cfgServer = DEFAULT_SERVER;
+        cfgSleepMin = 60;
+        cfgConfigJson = "";
+        cfgDeviceToken = "";
+        cfgPendingPairCode = "";
+        g_wifiCount = 0;
+        return;
+    }
 
     int version = prefs.getInt("cfg_version", 0);
     if (version != CONFIG_VERSION) {
-        Serial.printf("Config version mismatch (%d != %d), using defaults\n",
+        Serial.printf("[CFG] Config version mismatch (%d != %d), using defaults\n",
                       version, CONFIG_VERSION);
         prefs.end();
         cfgSSID = "";
@@ -91,6 +102,9 @@ void loadConfig() {
     cfgServer       = prefs.getString("server", DEFAULT_SERVER);
     cfgSleepMin     = prefs.getInt("sleep_min", 60);
     cfgConfigJson   = prefs.getString("config_json", "");
+
+
+
     cfgDeviceToken  = prefs.getString("device_token", "");
     cfgPendingPairCode = prefs.getString("pair_code", "");
 

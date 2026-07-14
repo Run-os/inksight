@@ -9,8 +9,8 @@ const uint8_t* getGlyph(char c);
 // Draw scaled text into imgBuf at (x, y)
 void drawText(const char *msg, int x, int y, int scale);
 
-// Show WiFi setup screen with AP name
-void showSetupScreen(const char *apName);
+// Show WiFi setup screen with AP name and config-site URL (e.g. 192.168.4.1)
+void showSetupScreen(const char *apName, const char *url);
 
 // Show centered error message on screen
 void showError(const char *msg);

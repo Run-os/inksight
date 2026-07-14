@@ -450,27 +450,31 @@ void startCaptivePortal() {
         Serial.println("Portal reset requested, staying in provisioning mode");
     });
 
-    // ── Captive portal redirect for all other requests ──────
+    // ── Explicit handlers for captive-portal probes ─────────
+    // Registering them avoids the library's "request handler not found" log
+    // and makes phones auto-open the portal (return the setup page, not 204).
+    auto servePortal = []() { webServer.send(200, "text/html", PORTAL_HTML); };
+    webServer.on("/generate_204", HTTP_GET, servePortal);
+    webServer.on("/gen_204", HTTP_GET, servePortal);
+    webServer.on("/hotspot-detect.html", HTTP_GET, servePortal);
+    webServer.on("/canonical.html", HTTP_GET, servePortal);
+    webServer.on("/success.txt", HTTP_GET, servePortal);
+    webServer.on("/ncsi.txt", HTTP_GET, servePortal);
+    webServer.on("/connecttest.txt", HTTP_GET, servePortal);
+    webServer.on("/redirect", HTTP_GET, servePortal);
+    webServer.on("/favicon.ico", HTTP_GET, []() { webServer.send(204); });
+
+    // ── Fallback: serve the portal page for any other request ──
     webServer.onNotFound([]() {
         String path = webServer.uri();
-
-        // Silently handle captive portal detection URLs
-        if (path == "/generate_204" || path == "/gen_204" ||
-            path == "/hotspot-detect.html" || path == "/canonical.html" ||
-            path == "/success.txt" || path == "/ncsi.txt") {
-            webServer.send(204);
-            return;
-        }
-
-        // Ignore common resource requests
-        if (path.endsWith(".ico") || path.endsWith(".png") || path.endsWith(".jpg")) {
+        // Quietly 404 only for static resource probes.
+        if (path.endsWith(".ico") || path.endsWith(".png") ||
+            path.endsWith(".jpg") || path.endsWith(".css") || path.endsWith(".js")) {
             webServer.send(404);
             return;
         }
-
-        // Redirect everything else to portal
-        webServer.sendHeader("Location", "http://" + WiFi.softAPIP().toString());
-        webServer.send(302, "text/plain", "");
+        // Everything else (incl. unknown captive-portal probes) -> show portal.
+        webServer.send(200, "text/html", PORTAL_HTML);
     });
 
     webServer.begin();
