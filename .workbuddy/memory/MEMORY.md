@@ -25,7 +25,11 @@
 - 设置界面：`AppView::SETTINGS` + `renderSettingsScreen`，两级菜单（系统设置 → 重新配网 / MAC / WiFi 名）。
 
 ## 时间/时区
-- `network.cpp::syncNTP()` 显式 `setenv("TZ","CST-8",1); tzset();` 强制东八区；`configTime` 正偏移可能回退 UTC。
+- **时间主源 = NTP**：`network.cpp::syncNTP()` 调 `configTime(NTP_UTC_OFFSET, 0, "ntp1.ntsc.ac.cn")`
+  （原 aliyun/pool.ntp/time.google，已统一改为 `ntp1.ntsc.ac.cn`）。
+- **不使用后端 HTTP `Date` 头做时间源**（用户明确要求撤掉该方案）：已删除 `applyServerTime` /
+  `g_serverTimeSet` / `collectHeaders({"Date"})` 及相关解析函数（HTTP_MONTHS/civilToDays/parseHttpDateUTC）。
+- `configTime` 正偏移可能回退 UTC，故 `syncNTP` 显式 `setenv("TZ","CST-8",1); tzset();` 强制北京时。
 - 动态刷新：`loop()` 检测分钟变化，调用 `repaintTodoView()` 用缓存待办 + 实时电量重绘，不重新拉后端。
 
 ## 后端/图片
@@ -41,6 +45,11 @@
   3. 编译：`cd firmware && pio run -e epd_42_rlcd_s3_n16r8`（build_dir 已设 ASCII 路径，避开中文路径 link 失败）。
   4. 视觉验证：`firmware/tools/render_ascii{N}_check.py` 解析**真实烧录**的位图 + 16px 中文混排，确认无截断、cap-top 与中文顶端对齐。
 - **对齐规则**：中文顶端 y，英文画在 `y - ASCII{N}_CAP`（CAP=大写'H'顶端行）；步进 `cx += ascii{N}_width[cp] + 1`（比例字宽 + 1px 间距）。
+- **⚠️ 字形注释不可含行末反斜杠**（2026-07-14 踩坑）：`gen_ascii20.py` 给每条字形写行内注释 `// 0x{cp:02X} {disp}`，
+  其中 `disp` 曾用字形原始字符。对 `\`(0x5C)，注释变成 `// 0x5C \`，末尾反斜杠在 C 里是**行续接**，
+  会把下一行字形条目整行吞进注释 → 编译期数组缺一项、'\\' 之后所有字形错位 +1（曾导致 "milk" 渲染成 "njrh"，
+  而源码肉眼/Python 都数成 95 项正确，极隐蔽）。已修：`disp = "BS" if ch=="\\\\" else ch`。
+  生成/手改字形表后，务必确认无 `// xxx\` 结尾的行。
 
 ## 未决事项
 - 真机刷机确认：时间、键位、设置界面、电量动态刷新、中英文混排视觉。

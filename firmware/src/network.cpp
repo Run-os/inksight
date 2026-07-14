@@ -42,6 +42,8 @@ static String extractJsonStringField(const String &body, const char *key);
 static String extractJsonBoolField(const String &body, const char *key);
 static int extractJsonIntField(const String &body, const char *key, int defaultValue = 0);
 
+static bool sntpStarted = false;
+
 // ── WiFi connection ─────────────────────────────────────────
 
 // Associate with a single AP and wait up to WIFI_TIMEOUT. Returns true on
@@ -1149,8 +1151,6 @@ bool postRuntimeMode(const char *mode) {
 //
 // configTime() is only invoked once (SNTP init); subsequent calls just poll
 // getLocalTime() so we never restart the SNTP client mid-sync.
-static bool sntpStarted = false;
-
 bool rtcTimeValid() {
     return time(nullptr) > TIME_LOCAL_VALID_MIN;
 }
@@ -1171,7 +1171,7 @@ void syncNTP() {
     setenv("TZ", "CST-8", 1);
     tzset();
     if (!sntpStarted) {
-        configTime(NTP_UTC_OFFSET, 0, "ntp.aliyun.com", "pool.ntp.org", "time.google.com");
+        configTime(NTP_UTC_OFFSET, 0, "ntp1.ntsc.ac.cn");
         setenv("TZ", "CST-8", 1);   // re-assert: configTime() overwrites TZ
         tzset();
         sntpStarted = true;

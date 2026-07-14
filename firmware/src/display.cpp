@@ -301,10 +301,20 @@ static const uint16_t GLYPH_WAN[16] = {
     0x4934, 0x4850, 0x7850, 0x4892, 0x0312, 0x0C1F, 0x0000, 0x0000,
 };
 
-// 16x16 WiFi icon (3 nested arcs + center dot). Black = 1.
+// 16x16 WiFi icons (Black = 1, MSB-first). Drawn by drawGlyph16.
+// Connected: clean WiFi symbol (signal arcs + device dot).
 static const uint16_t GLYPH_WIFI[16] = {
-    0x0300, 0x0480, 0x0840, 0x1020, 0x2010, 0x4008, 0x0000, 0x0C30,
-    0x1008, 0x2004, 0x0FF0, 0x0000, 0x0000, 0x0000, 0x0180, 0x0180,
+    0x0000, 0x0000, 0x07E0, 0x1FF8,
+    0x7C3E, 0xE007, 0x4182, 0x0FF0,
+    0x1FF8, 0x0810, 0x0000, 0x03C0,
+    0x0180, 0x0000, 0x0000, 0x0000,
+};
+// Not connected: same symbol struck through by a diagonal slash.
+static const uint16_t GLYPH_WIFI_OFF[16] = {
+    0x0000, 0x4000, 0x23E0, 0x33FC,
+    0x79FE, 0x7CFE, 0x3E7C, 0x1F38,
+    0x0F98, 0x0FC0, 0x07E0, 0x03F0,
+    0x0198, 0x0000, 0x0000, 0x0000,
 };
 
 int currentPeriodIndex() {
@@ -605,18 +615,17 @@ static void drawStatusBar(int batteryPct, bool wifiConnected) {
              ti.tm_mon + 1, ti.tm_mday, WEEKDAY_CN[ti.tm_wday % 7]);
     drawMixed(cx + 6, lineY, date, 1);
 
-    // ── Right side: WiFi icon (when connected) + "电量：xx%" ──
+    // ── Right side: WiFi icon (connected / not-connected) + "电量：xx%" ──
     char batt[16];
     snprintf(batt, sizeof(batt), "电量:%d%%", batteryPct);
     int battW = measureMixed(batt, 1);          // CJK + half-width ASCII
     int wifiW = 16, gap = 6;
     int rightX = W - 4;                          // right margin
-    int blockW = (wifiConnected ? (wifiW + gap) : 0) + battW;
+    int blockW = wifiW + gap + battW;            // icon is always shown (state switches shape)
     int curX = rightX - blockW;
-    if (wifiConnected) {
-        drawGlyph16(imgBuf, W, H, curX, lineY, GLYPH_WIFI);
-        curX += wifiW + gap;
-    }
+    drawGlyph16(imgBuf, W, H, curX, lineY,
+                wifiConnected ? GLYPH_WIFI : GLYPH_WIFI_OFF);
+    curX += wifiW + gap;
     drawMixed(curX, lineY, batt, 1);
 
     // separator rule under status bar

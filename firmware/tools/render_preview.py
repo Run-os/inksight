@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 render_preview.py — InkSight 待办列表 UI 预览生成器（验证用，与固件逐像素同构）
@@ -18,6 +17,7 @@ render_preview.py — InkSight 待办列表 UI 预览生成器（验证用，与
 """
 import os, re, sys
 from PIL import Image
+import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 H_PATH = os.path.join(HERE, "..", "src", "cjk16.h")
@@ -28,9 +28,10 @@ WHITE, BLACK = 255, 0
 # 与 firmware/src/display.cpp 一致的布局常量
 UI_SB_H, UI_FT_H, UI_ROW_H, UI_PER_PAGE = 52, 26, 30, 6
 
-# 16x16 WiFi 图标（与固件 GLYPH_WIFI 同构，bit15=最左列，黑=1）
-GLYPH_WIFI = [0x0300, 0x0480, 0x0840, 0x1020, 0x2010, 0x4008, 0x0000, 0x0C30,
-              0x1008, 0x2004, 0x0FF0, 0x0000, 0x0000, 0x0000, 0x0180, 0x0180]
+GLYPH_WIFI_CONNECTED = [0x0000, 0x0000, 0x07E0, 0x1FF8, 0x7C3E, 0xE007, 0x4182, 0x0FF0,
+                        0x1FF8, 0x0810, 0x0000, 0x03C0, 0x0180, 0x0000, 0x0000, 0x0000]
+GLYPH_WIFI_DISCONNECTED = [0x0000, 0x4000, 0x23E0, 0x33FC, 0x79FE, 0x7CFE, 0x3E7C, 0x1F38,
+                           0x0F98, 0x0FC0, 0x07E0, 0x03F0, 0x0198, 0x0000, 0x0000, 0x0000]
 
 # ── 解析 cjk16.h 真实点阵 ─────────────────────────────────
 def load_cjk():
@@ -205,9 +206,10 @@ def draw_mini_list(px, x, y):
         for xx in range(x+6, x+14):
             px_set(px, xx, y+r*6+2)
 
-def draw_wifi(px, x, y):
+def draw_wifi(px, x, y, connected=True):
+    glyph = GLYPH_WIFI_CONNECTED if connected else GLYPH_WIFI_DISCONNECTED
     for r in range(16):
-        bits = GLYPH_WIFI[r]
+        bits = glyph[r]
         for c in range(16):
             if bits & (1 << (15 - c)):
                 px_set(px, x + c, y + r)
@@ -223,11 +225,10 @@ def draw_status_bar(px, hhmm, date, battery_pct, wifi_connected=True):
     batt = "电量:%d%%" % battery_pct
     batt_w = measure_mixed(batt, 1)
     wifi_w, gap = 16, 6
-    block_w = (wifi_w + gap if wifi_connected else 0) + batt_w
+    block_w = wifi_w + gap + batt_w
     cur_x = (W - 4) - block_w
-    if wifi_connected:
-        draw_wifi(px, cur_x, line_y)
-        cur_x += wifi_w + gap
+    draw_wifi(px, cur_x, line_y, connected=wifi_connected)
+    cur_x += wifi_w + gap
     render_mixed(px, batt, cur_x, line_y, 1)
     for xx in range(W):
         px_set(px, xx, UI_SB_H)                      # 状态栏底线
@@ -294,7 +295,11 @@ def dump_ascii(img, block=6):
     return "\n".join(lines)
 
 if __name__ == "__main__":
-    out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "preview_todo.png")
+    out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(HERE), "preview_todo.png")
+    now = datetime.datetime.now()
+    hhmm = now.strftime("%H:%M")
+    weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+    date = now.strftime("%m/%d ") + weekdays[now.weekday()]
     todos = [
         {"text":"买菜：牛奶 milk 和鸡蛋", "done":False, "remind":"09:30"},
         {"text":"14:00 项目评审会议 review", "done":True,  "remind":"14:00"},
@@ -303,6 +308,6 @@ if __name__ == "__main__":
         {"text":"阅读《三体》第 3 章", "done":True,  "remind":"20:00"},
         {"text":"健身 run 30 分钟", "done":False, "remind":"21:00"},
     ]
-    img = render_page(out, todos)
+    img = render_page(out, todos, hhmm=hhmm, date=date)
     print("saved", out, img.size)
     print(dump_ascii(img))

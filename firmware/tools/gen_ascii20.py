@@ -117,7 +117,9 @@ def fmt_c(glyphs, widths, geom, size):
     for cp, rows in glyphs:
         vals = ", ".join(f"0x{v:X}" for v in rows)
         ch = chr(cp)
-        disp = ch if ch != " " else " "
+        # '\' (0x5C) 不可作为注释末字符：C 行末反斜杠会行续接，
+        # 把下一行字形条目吞进注释，导致编译期数组缺项、整段错位。
+        disp = "BS" if ch == "\\" else ch
         L.append(f"    {{{vals}}}, // 0x{cp:02X} {disp}")
     L.append("};")
     L.append("")
